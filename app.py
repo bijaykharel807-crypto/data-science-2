@@ -58,16 +58,7 @@ def load_model(filename):
     except Exception:
         pass
 
-    # Strategy 4: try loading as a text file (unlikely, but just in case)
-    try:
-        with open(filepath, 'r') as f:
-            content = f.read()
-            # not a model, return None
-            return None
-    except:
-        pass
-
-    # If all fail, log the error (but we can't show it directly without leaking)
+    # If all fail, show error
     st.error(f"❌ Could not load {filename}. Please re‑save with joblib in the same environment.")
     return None
 
@@ -107,9 +98,6 @@ if meta and "target_column" in meta:
     TARGET_COLUMN = meta["target_column"]
 
 # ---------- PAGES ----------
-# (everything else stays the same – keep the rest of the code exactly as before)
-# I'll include the rest for completeness:
-
 if page == "Project Details":
     st.title("📋 Project Details")
     st.markdown("""
@@ -337,3 +325,26 @@ else:  # Prediction
         st.write(f"Type: {type(model)}")
         if meta:
             st.write("Metadata:", meta)
+
+# ---------- STANDALONE RE‑SAVE UTILITY ----------
+# If you run `python app.py` directly (not `streamlit run app.py`),
+# this will re‑save all .pkl files using joblib.
+# This is useful when you are in the original training environment.
+if __name__ == "__main__":
+    import joblib
+    import pickle
+    import os
+
+    print("🔄 Re‑saving all models with joblib...")
+    model_dir = "saved_models"
+    for fname in os.listdir(model_dir):
+        if fname.endswith('.pkl'):
+            filepath = os.path.join(model_dir, fname)
+            try:
+                with open(filepath, 'rb') as f:
+                    model = pickle.load(f)
+                joblib.dump(model, filepath)
+                print(f"✅ Re‑saved: {fname}")
+            except Exception as e:
+                print(f"❌ Failed to re‑save {fname}: {e}")
+    print("🎯 Done.")
