@@ -6,7 +6,6 @@ import joblib
 import os
 import matplotlib.pyplot as plt
 import seaborn as sns
-import plotly.express as px
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     mean_squared_error, r2_score
@@ -30,7 +29,7 @@ MODEL_FILES = [f for f in ALL_FILES if f != 'meta.pkl']
 
 # ---------- FEATURE NAMES (including Age) ----------
 FEATURE_NAMES = [
-    "Age",          # <-- added
+    "Age",
     "SibSp",
     "FamilySize",
     "Parch",
@@ -170,15 +169,20 @@ elif page == "EDA":
 
         if TARGET_COLUMN in df.columns:
             st.subheader(f"Target Distribution ({TARGET_COLUMN})")
-            fig = px.histogram(df, x=TARGET_COLUMN, title=f"Distribution of {TARGET_COLUMN}")
-            st.plotly_chart(fig)
+            fig, ax = plt.subplots()
+            df[TARGET_COLUMN].value_counts().plot(kind='bar', ax=ax)
+            ax.set_xlabel(TARGET_COLUMN)
+            ax.set_ylabel("Count")
+            st.pyplot(fig)
 
-        if len(df.columns) <= 8:
-            st.subheader("Pairplot (first 5 numeric columns)")
+        # Pairplot using seaborn (if not too many columns)
+        if len(df.columns) <= 8 and len(numeric_df.columns) > 1:
+            st.subheader("Pairplot (numeric columns)")
+            # Limit to first 5 numeric cols to avoid clutter
             num_cols = numeric_df.columns[:5].tolist()
             if len(num_cols) > 1:
-                fig = px.scatter_matrix(df, dimensions=num_cols)
-                st.plotly_chart(fig)
+                fig = sns.pairplot(df[num_cols])
+                st.pyplot(fig)
 
 # ---------- PAGE: Model Comparison ----------
 elif page == "Model Comparison":
@@ -233,11 +237,17 @@ elif page == "Model Comparison":
                     st.subheader("Performance Table")
                     metric_cols = results_df.columns[1:]
                     st.dataframe(results_df.style.highlight_max(axis=0, subset=metric_cols))
+
+                    # Bar chart using matplotlib
+                    st.subheader("Performance Comparison")
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    # Melt the dataframe for grouped bars
                     melted = results_df.melt(id_vars=['Model'], value_vars=metric_cols,
                                              var_name='Metric', value_name='Score')
-                    fig = px.bar(melted, x='Model', y='Score', color='Metric',
-                                 barmode='group', title="Model Performance")
-                    st.plotly_chart(fig)
+                    sns.barplot(data=melted, x='Model', y='Score', hue='Metric', ax=ax)
+                    ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right')
+                    plt.tight_layout()
+                    st.pyplot(fig)
                 else:
                     st.info("No models evaluated.")
 
