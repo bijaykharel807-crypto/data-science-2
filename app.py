@@ -58,7 +58,6 @@ def load_model(filename):
     except Exception:
         pass
 
-    # If all fail, show error
     st.error(f"❌ Could not load {filename}. Please re‑save with joblib in the same environment.")
     return None
 
@@ -99,40 +98,59 @@ if meta and "target_column" in meta:
 
 # ---------- PAGES ----------
 if page == "Project Details":
+    
 
-
+# ---------- PAGE: Dataset ----------
 elif page == "Dataset":
     st.title("📊 Dataset")
-    st.write("Upload your CSV or use the built‑in Titanic sample.")
+    st.write("Load your dataset from a URL, upload a CSV, or use the built‑in sample.")
 
+    # ---------- URL Loader ----------
+    st.subheader("Load from URL")
+    url = st.text_input("Enter the URL of a CSV file (e.g., raw GitHub link):")
+    if st.button("Load from URL"):
+        if url:
+            try:
+                df = pd.read_csv(url)
+                st.session_state['df'] = df
+                st.success("Dataset loaded from URL successfully!")
+            except Exception as e:
+                st.error(f"Error loading from URL: {e}")
+        else:
+            st.warning("Please enter a valid URL.")
+
+    # ---------- File Uploader ----------
+    st.subheader("Upload CSV")
     uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
 
     if uploaded_file is not None:
         df = pd.read_csv(uploaded_file)
         st.session_state['df'] = df
-        st.success("Dataset loaded!")
-    else:
-        if 'df' not in st.session_state:
-            np.random.seed(42)
-            n = 200
-            data = {
-                "Age": np.random.uniform(1, 80, n).round(1),
-                "SibSp": np.random.randint(0, 5, n),
-                "FamilySize": np.random.randint(1, 6, n),
-                "Parch": np.random.randint(0, 4, n),
-                "Pclass": np.random.choice([1,2,3], n),
-                "Embarked": np.random.choice(['C','Q','S'], n),
-                "Sex": np.random.choice(['male','female'], n),
-                "Fare": np.random.uniform(5, 100, n).round(2),
-                "IsAlone": np.random.choice([0,1], n),
-                TARGET_COLUMN: np.random.choice([0,1], n)
-            }
-            df = pd.DataFrame(data)
-            st.session_state['df'] = df
-            st.info("Using generated sample data. Upload your own CSV to replace it.")
-        else:
-            df = st.session_state['df']
+        st.success("Dataset uploaded successfully!")
 
+    # ---------- Sample Data (fallback) ----------
+    if 'df' not in st.session_state:
+        # Generate a dummy Titanic‑like dataset if nothing is loaded yet
+        np.random.seed(42)
+        n = 200
+        data = {
+            "Age": np.random.uniform(1, 80, n).round(1),
+            "SibSp": np.random.randint(0, 5, n),
+            "FamilySize": np.random.randint(1, 6, n),
+            "Parch": np.random.randint(0, 4, n),
+            "Pclass": np.random.choice([1,2,3], n),
+            "Embarked": np.random.choice(['C','Q','S'], n),
+            "Sex": np.random.choice(['male','female'], n),
+            "Fare": np.random.uniform(5, 100, n).round(2),
+            "IsAlone": np.random.choice([0,1], n),
+            TARGET_COLUMN: np.random.choice([0,1], n)
+        }
+        df = pd.DataFrame(data)
+        st.session_state['df'] = df
+        st.info("Using generated sample data. Load your own CSV or use a URL to replace it.")
+
+    # ---------- Display Dataset ----------
+    df = st.session_state['df']
     st.subheader("Data Preview")
     st.dataframe(df.head(10))
 
@@ -148,6 +166,7 @@ elif page == "Dataset":
     csv = df.to_csv(index=False).encode('utf-8')
     st.download_button("Download CSV", data=csv, file_name="dataset.csv", mime="text/csv")
 
+# ---------- PAGE: EDA ----------
 elif page == "EDA":
     st.title("🔍 Exploratory Data Analysis")
     if 'df' not in st.session_state:
@@ -179,6 +198,7 @@ elif page == "EDA":
                 fig = sns.pairplot(df[num_cols])
                 st.pyplot(fig)
 
+# ---------- PAGE: Model Comparison ----------
 elif page == "Model Comparison":
     st.title("⚖️ Model Comparison")
     st.write("Evaluate all models on a test set (20% holdout).")
@@ -242,7 +262,8 @@ elif page == "Model Comparison":
                 else:
                     st.info("No models evaluated.")
 
-else:  # Prediction
+# ---------- PAGE: Prediction ----------
+else:
     st.title("🎯 Make a Prediction")
     st.write("Enter passenger details and choose a model to predict survival.")
 
@@ -315,9 +336,6 @@ else:  # Prediction
             st.write("Metadata:", meta)
 
 # ---------- STANDALONE RE‑SAVE UTILITY ----------
-# If you run `python app.py` directly (not `streamlit run app.py`),
-# this will re‑save all .pkl files using joblib.
-# This is useful when you are in the original training environment.
 if __name__ == "__main__":
     import joblib
     import pickle
