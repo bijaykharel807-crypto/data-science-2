@@ -27,35 +27,49 @@ MODEL_DIR = "saved_models"
 ALL_FILES = [f for f in os.listdir(MODEL_DIR) if f.endswith('.pkl')]
 MODEL_FILES = [f for f in ALL_FILES if f != 'meta.pkl']
 
-# ---------- FEATURE NAMES (including Age) ----------
 FEATURE_NAMES = [
-    "Age",
-    "SibSp",
-    "FamilySize",
-    "Parch",
-    "Pclass",
-    "Embarked",
-    "Sex",
-    "Fare",
-    "IsAlone"
+    "Age", "SibSp", "FamilySize", "Parch", "Pclass",
+    "Embarked", "Sex", "Fare", "IsAlone"
 ]
-
 CATEGORICAL_FEATURES = ["Embarked", "Sex"]
-TARGET_COLUMN = "Survived"   # adjust if your dataset uses a different name
+TARGET_COLUMN = "Survived"
 
-# ---------- MODEL LOADING (cached) ----------
+# ---------- ROBUST MODEL LOADER ----------
 @st.cache_resource
 def load_model(filename):
     filepath = os.path.join(MODEL_DIR, filename)
+    # Strategy 1: joblib
     try:
         return joblib.load(filepath)
     except Exception:
-        try:
-            with open(filepath, 'rb') as f:
-                return pickle.load(f)
-        except Exception as e:
-            st.error(f"Could not load {filename}: {e}")
+        pass
+
+    # Strategy 2: pickle with default settings
+    try:
+        with open(filepath, 'rb') as f:
+            return pickle.load(f)
+    except Exception:
+        pass
+
+    # Strategy 3: pickle with latin1 encoding and fix_imports
+    try:
+        with open(filepath, 'rb') as f:
+            return pickle.load(f, encoding='latin1', fix_imports=True)
+    except Exception:
+        pass
+
+    # Strategy 4: try loading as a text file (unlikely, but just in case)
+    try:
+        with open(filepath, 'r') as f:
+            content = f.read()
+            # not a model, return None
             return None
+    except:
+        pass
+
+    # If all fail, log the error (but we can't show it directly without leaking)
+    st.error(f"❌ Could not load {filename}. Please re‑save with joblib in the same environment.")
+    return None
 
 @st.cache_resource
 def load_all_models():
@@ -64,21 +78,27 @@ def load_all_models():
         model = load_model(fname)
         if model is not None:
             models[fname] = model
+        else:
+            st.warning(f"⛔ Failed to load: {fname}")
     return models
 
 @st.cache_resource
 def load_meta():
     meta_path = os.path.join(MODEL_DIR, "meta.pkl")
-    if os.path.exists(meta_path):
+    if not os.path.exists(meta_path):
+        return None
+    try:
+        return joblib.load(meta_path)
+    except:
         try:
             with open(meta_path, 'rb') as f:
                 return pickle.load(f)
-        except Exception:
+        except:
             try:
-                return joblib.load(meta_path)
-            except Exception:
+                with open(meta_path, 'rb') as f:
+                    return pickle.load(f, encoding='latin1', fix_imports=True)
+            except:
                 return None
-    return None
 
 meta = load_meta()
 if meta and "feature_names" in meta:
@@ -86,7 +106,10 @@ if meta and "feature_names" in meta:
 if meta and "target_column" in meta:
     TARGET_COLUMN = meta["target_column"]
 
-# ---------- PAGE: Project Details ----------
+# ---------- PAGES ----------
+# (everything else stays the same – keep the rest of the code exactly as before)
+# I'll include the rest for completeness:
+
 if page == "Project Details":
     st.title("📋 Project Details")
     st.markdown("""
@@ -102,7 +125,6 @@ if page == "Project Details":
     Use the sidebar to navigate.
     """)
 
-# ---------- PAGE: Dataset ----------
 elif page == "Dataset":
     st.title("📊 Dataset")
     st.write("Upload your CSV or use the built‑in Titanic sample.")
@@ -150,7 +172,6 @@ elif page == "Dataset":
     csv = df.to_csv(index=False).encode('utf-8')
     st.download_button("Download CSV", data=csv, file_name="dataset.csv", mime="text/csv")
 
-# ---------- PAGE: EDA ----------
 elif page == "EDA":
     st.title("🔍 Exploratory Data Analysis")
     if 'df' not in st.session_state:
@@ -175,16 +196,13 @@ elif page == "EDA":
             ax.set_ylabel("Count")
             st.pyplot(fig)
 
-        # Pairplot using seaborn (if not too many columns)
         if len(df.columns) <= 8 and len(numeric_df.columns) > 1:
             st.subheader("Pairplot (numeric columns)")
-            # Limit to first 5 numeric cols to avoid clutter
             num_cols = numeric_df.columns[:5].tolist()
             if len(num_cols) > 1:
                 fig = sns.pairplot(df[num_cols])
                 st.pyplot(fig)
 
-# ---------- PAGE: Model Comparison ----------
 elif page == "Model Comparison":
     st.title("⚖️ Model Comparison")
     st.write("Evaluate all models on a test set (20% holdout).")
@@ -196,7 +214,6 @@ elif page == "Model Comparison":
         if TARGET_COLUMN not in df.columns:
             st.error(f"Target column '{TARGET_COLUMN}' not found.")
         else:
-            # Ensure all features exist; add missing ones with default 0
             for feat in FEATURE_NAMES:
                 if feat not in df.columns:
                     df[feat] = 0
@@ -206,7 +223,7 @@ elif page == "Model Comparison":
 
             models = load_all_models()
             if not models:
-                st.error("No models could be loaded.")
+                st.error("❌ No models could be loaded. Please re‑save them with joblib (see instructions above).")
             else:
                 results = []
                 for name, model in models.items():
@@ -238,10 +255,8 @@ elif page == "Model Comparison":
                     metric_cols = results_df.columns[1:]
                     st.dataframe(results_df.style.highlight_max(axis=0, subset=metric_cols))
 
-                    # Bar chart using matplotlib
                     st.subheader("Performance Comparison")
                     fig, ax = plt.subplots(figsize=(10, 6))
-                    # Melt the dataframe for grouped bars
                     melted = results_df.melt(id_vars=['Model'], value_vars=metric_cols,
                                              var_name='Metric', value_name='Score')
                     sns.barplot(data=melted, x='Model', y='Score', hue='Metric', ax=ax)
@@ -251,8 +266,7 @@ elif page == "Model Comparison":
                 else:
                     st.info("No models evaluated.")
 
-# ---------- PAGE: Prediction ----------
-else:
+else:  # Prediction
     st.title("🎯 Make a Prediction")
     st.write("Enter passenger details and choose a model to predict survival.")
 
@@ -263,7 +277,7 @@ else:
     model_choice = st.selectbox("Select a model", MODEL_FILES)
     model = load_model(model_choice)
     if model is None:
-        st.error(f"Could not load {model_choice}.")
+        st.error(f"Could not load {model_choice}. Please re‑save with joblib.")
         st.stop()
 
     st.subheader("Passenger Information")
