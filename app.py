@@ -99,19 +99,7 @@ if meta and "target_column" in meta:
 
 # ---------- PAGES ----------
 if page == "Project Details":
-    st.title("📋 Project Details")
-    st.markdown("""
-    ### Titanic Survival Prediction
 
-    This app serves multiple trained classifiers to predict whether a passenger survived the Titanic disaster.
-
-    - **Features**: Age, SibSp, FamilySize, Parch, Pclass, Embarked, Sex, Fare, IsAlone
-    - **Target**: Survived (0 = No, 1 = Yes)
-    - **Models**: Decision Tree, Random Forest, Gradient Boosting, KNN, Logistic Regression
-    - **Best model**: `BEST_DecisionTree.pkl`
-
-    Use the sidebar to navigate.
-    """)
 
 elif page == "Dataset":
     st.title("📊 Dataset")
