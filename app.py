@@ -145,20 +145,7 @@ if page == "Project Details":
 
 elif page == "Dataset":
     st.title("📊 Dataset")
-    st.write("Load your dataset from a URL or paste CSV content below.")
-
-    # URL Loader
-    st.subheader("Load from URL")
-    url = st.text_input("Enter the URL of a CSV file (e.g., raw GitHub link):")
-    if st.button("Load from URL"):
-        if url:
-            try:
-                df = pd.read_csv(url)
-                df = ensure_derived_features(df)
-                st.session_state['df'] = df
-                st.success("Dataset loaded from URL successfully!")
-            except Exception as e:
-                st.error(f"Error loading from URL: {e}")
+    st.write("Load your dataset by pasting CSV content below.")
 
     # Paste CSV data
     st.subheader("Paste CSV Data")
@@ -193,7 +180,7 @@ elif page == "Dataset":
         csv = df.to_csv(index=False).encode('utf-8')
         st.download_button("Download CSV", data=csv, file_name="dataset.csv", mime="text/csv")
     else:
-        st.info("Please load a dataset using one of the methods above.")
+        st.info("Please load a dataset using the method above.")
 
 elif page == "EDA":
     st.title("🔍 Exploratory Data Analysis")
