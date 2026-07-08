@@ -27,7 +27,7 @@ st.set_page_config(page_title="ML Dashboard", layout="wide")
 st.sidebar.title("Navigation")
 page = st.sidebar.radio(
     "Go to",
-    ["Project Details", "Dataset", "EDA", "Prediction"]   # Model Comparison removed
+    ["Project Details", "Dataset", "EDA", "Train Models", "Prediction"]
 )
 
 # ---------- CONSTANTS ----------
@@ -98,9 +98,8 @@ def load_meta():
         except:
             return None
 
-# ---------- PREPROCESSOR EXTRACTION (NO RETRAINING) ----------
+# ---------- PREPROCESSOR EXTRACTION ----------
 def get_preprocessor_from_models(models):
-    """Try to extract a preprocessor from saved pipelines."""
     for model in models.values():
         if isinstance(model, Pipeline) and hasattr(model, 'named_steps'):
             for step_name, step_obj in model.named_steps.items():
@@ -109,20 +108,83 @@ def get_preprocessor_from_models(models):
     return None
 
 def get_preprocessor_only():
-    """
-    Return a preprocessor from meta.pkl or from a pipeline.
-    Does NOT build a new preprocessor from the dataset (no retraining).
-    """
     meta = load_meta()
     if meta and 'preprocessor' in meta:
         return meta['preprocessor']
-
     models = load_all_models()
     preprocessor = get_preprocessor_from_models(models)
     if preprocessor is not None:
         return preprocessor
-
     return None
+
+# ---------- TRAINING FUNCTION ----------
+def train_models(df):
+    """Train all models on the given dataframe and save to saved_models/"""
+    # Ensure required columns exist
+    required = FEATURE_NAMES + [TARGET_COLUMN]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing columns: {missing}")
+
+    X = df[FEATURE_NAMES]
+    y = df[TARGET_COLUMN]
+
+    # Split
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+
+    # Preprocessor
+    preprocessor = ColumnTransformer([
+        ('num', StandardScaler(), NUMERIC_FEATURES),
+        ('cat', OneHotEncoder(drop='first', handle_unknown='ignore'), CATEGORICAL_FEATURES)
+    ])
+    preprocessor.fit(X_train)
+
+    # Models
+    models = {
+        'DecisionTree': DecisionTreeClassifier(random_state=42),
+        'RandomForest': RandomForestClassifier(random_state=42),
+        'GradientBoosting': GradientBoostingClassifier(random_state=42),
+        'KNN': KNeighborsClassifier(),
+        'LogisticRegression': LogisticRegression(random_state=42)
+    }
+
+    # Save preprocessor meta
+    meta = {'preprocessor': preprocessor}
+    with open(os.path.join(MODEL_DIR, 'meta.pkl'), 'wb') as f:
+        pickle.dump(meta, f)
+
+    # Train and save each model
+    for name, clf in models.items():
+        pipeline = Pipeline([
+            ('preprocessor', preprocessor),
+            ('classifier', clf)
+        ])
+        pipeline.fit(X_train, y_train)
+        joblib.dump(pipeline, os.path.join(MODEL_DIR, f'{name}.pkl'))
+
+    # Also save a "best" model (here we pick the best accuracy on test set)
+    # For simplicity, we'll just copy the best performer (RandomForest often good)
+    # Or we can evaluate all and pick the best
+    best_acc = -1
+    best_name = None
+    for name, clf in models.items():
+        pipe = Pipeline([('preprocessor', preprocessor), ('classifier', clf)])
+        pipe.fit(X_train, y_train)
+        acc = pipe.score(X_test, y_test)
+        if acc > best_acc:
+            best_acc = acc
+            best_name = name
+    # Save the best as BEST_<name>.pkl
+    best_pipe = Pipeline([
+        ('preprocessor', preprocessor),
+        ('classifier', models[best_name])
+    ])
+    best_pipe.fit(X_train, y_train)
+    joblib.dump(best_pipe, os.path.join(MODEL_DIR, f'BEST_{best_name}.pkl'))
+
+    return f"✅ Models trained successfully! Best model: {best_name} with accuracy {best_acc:.3f}"
 
 # ---------- PAGES ----------
 
@@ -131,36 +193,61 @@ if page == "Project Details":
     st.markdown("""
     ### Titanic Survival Prediction
 
-    This app serves pre‑trained classifiers to predict survival.
+    This app trains and uses classifiers to predict survival.
 
     - **Features**: Age, SibSp, FamilySize, Parch, Pclass, Embarked, Sex, Fare, IsAlone
-      *FamilySize and IsAlone are derived automatically if you provide SibSp and Parch.*
     - **Target**: Survived (0 = No, 1 = Yes)
     - **Models**: Decision Tree, Random Forest, Gradient Boosting, KNN, Logistic Regression
-    - **Best model**: `BEST_DecisionTree.pkl`
-
-    **Models are pre‑trained** – see the `train/` folder for training scripts.
-    Use the sidebar to navigate.
+    - **Workflow**:
+        1. Load a dataset (or use the default Titanic data).
+        2. Explore with EDA.
+        3. Train models on the **Train Models** page.
+        4. Make predictions on the **Prediction** page.
     """)
 
 elif page == "Dataset":
     st.title("📊 Dataset")
-    st.write("Load your dataset by pasting CSV content below.")
+    st.write("Load your dataset by pasting CSV content below, or use the default Titanic dataset.")
 
-    # Paste CSV data
-    st.subheader("Paste CSV Data")
-    csv_text = st.text_area("Paste the CSV content here (including header row):", height=200)
-    if st.button("Load from pasted CSV"):
-        if csv_text.strip():
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Load Default Titanic Dataset"):
             try:
-                df = pd.read_csv(StringIO(csv_text))
+                df = sns.load_dataset('titanic')
+                # Keep relevant columns and rename
+                df = df[['survived', 'pclass', 'sex', 'age', 'sibsp', 'parch', 'fare', 'embarked']].copy()
+                df.rename(columns={
+                    'survived': 'Survived',
+                    'pclass': 'Pclass',
+                    'sex': 'Sex',
+                    'age': 'Age',
+                    'sibsp': 'SibSp',
+                    'parch': 'Parch',
+                    'fare': 'Fare',
+                    'embarked': 'Embarked'
+                }, inplace=True)
                 df = ensure_derived_features(df)
+                # Drop rows with missing values for simplicity
+                df = df.dropna()
                 st.session_state['df'] = df
-                st.success("Dataset loaded from pasted CSV successfully!")
+                st.success("Default Titanic dataset loaded!")
             except Exception as e:
-                st.error(f"Error parsing CSV: {e}")
-        else:
-            st.warning("Please paste some CSV data.")
+                st.error(f"Error loading default dataset: {e}")
+
+    with col2:
+        st.write("Or paste your own CSV:")
+        csv_text = st.text_area("Paste CSV content (header row required):", height=150)
+        if st.button("Load from pasted CSV"):
+            if csv_text.strip():
+                try:
+                    df = pd.read_csv(StringIO(csv_text))
+                    df = ensure_derived_features(df)
+                    st.session_state['df'] = df
+                    st.success("Dataset loaded from pasted CSV successfully!")
+                except Exception as e:
+                    st.error(f"Error parsing CSV: {e}")
+            else:
+                st.warning("Please paste some CSV data.")
 
     # Display dataset if loaded
     if 'df' in st.session_state:
@@ -180,7 +267,7 @@ elif page == "Dataset":
         csv = df.to_csv(index=False).encode('utf-8')
         st.download_button("Download CSV", data=csv, file_name="dataset.csv", mime="text/csv")
     else:
-        st.info("Please load a dataset using the method above.")
+        st.info("No dataset loaded. Use one of the options above.")
 
 elif page == "EDA":
     st.title("🔍 Exploratory Data Analysis")
@@ -213,19 +300,73 @@ elif page == "EDA":
                 fig = sns.pairplot(df[num_cols])
                 st.pyplot(fig)
 
-else:  # Prediction
+elif page == "Train Models":
+    st.title("🧠 Train Models")
+    st.write("Train all models on the currently loaded dataset. If no dataset is loaded, the default Titanic dataset will be used.")
+
+    # Check if dataset exists; if not, load default temporarily for training
+    df_for_training = None
+    if 'df' in st.session_state and st.session_state['df'] is not None:
+        df_for_training = st.session_state['df']
+        st.info(f"Using dataset with {len(df_for_training)} rows from the Dataset page.")
+    else:
+        st.warning("No dataset loaded. Will use the default Titanic dataset for training (loaded automatically).")
+        try:
+            df_temp = sns.load_dataset('titanic')
+            df_temp = df_temp[['survived', 'pclass', 'sex', 'age', 'sibsp', 'parch', 'fare', 'embarked']].copy()
+            df_temp.rename(columns={
+                'survived': 'Survived',
+                'pclass': 'Pclass',
+                'sex': 'Sex',
+                'age': 'Age',
+                'sibsp': 'SibSp',
+                'parch': 'Parch',
+                'fare': 'Fare',
+                'embarked': 'Embarked'
+            }, inplace=True)
+            df_temp = ensure_derived_features(df_temp)
+            df_temp = df_temp.dropna()
+            df_for_training = df_temp
+            st.info("Default Titanic dataset loaded for training.")
+        except Exception as e:
+            st.error(f"Could not load default dataset: {e}")
+
+    if df_for_training is not None:
+        if st.button("🚀 Train All Models", type="primary"):
+            with st.spinner("Training models... This may take a moment."):
+                try:
+                    result = train_models(df_for_training)
+                    st.success(result)
+                    # Clear cache so that models are reloaded next time
+                    st.cache_resource.clear()
+                    st.info("Models saved to `saved_models/`. You can now go to the Prediction page.")
+                except Exception as e:
+                    st.error(f"Training failed: {e}")
+    else:
+        st.error("No dataset available for training. Please load a dataset first.")
+
+    # Show existing models
+    st.subheader("Existing Models")
+    models = load_all_models()
+    if models:
+        st.write("Found the following models:")
+        for fname in models.keys():
+            st.write(f"- {fname}")
+    else:
+        st.write("No models found. Train them using the button above.")
+
+elif page == "Prediction":
     st.title("🎯 Make a Prediction")
     st.write("Enter passenger details and choose a model to predict survival.")
 
     models = load_all_models()
     if not models:
-        st.error("No pre‑trained models found. Please ensure models are in `saved_models/`.")
+        st.error("No pre‑trained models found. Please go to the **Train Models** page and train the models first.")
         st.stop()
 
-    # Load preprocessor from meta or pipeline – no fitting from dataset
     preprocessor = get_preprocessor_only()
     if preprocessor is None:
-        st.error("No preprocessor found. Please ensure `meta.pkl` is present or models are saved as pipelines.")
+        st.error("No preprocessor found. Please train models again.")
         st.stop()
 
     model_choice = st.selectbox("Select a model", list(models.keys()))
