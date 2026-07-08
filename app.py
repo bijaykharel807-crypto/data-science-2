@@ -27,7 +27,7 @@ st.set_page_config(page_title="ML Dashboard", layout="wide")
 st.sidebar.title("Navigation")
 page = st.sidebar.radio(
     "Go to",
-    ["Project Details", "Dataset", "EDA", "Prediction"]   # Model Comparison removed
+    ["Project Details", "Dataset", "EDA", "Prediction"]
 )
 
 # ---------- CONSTANTS ----------
@@ -54,6 +54,51 @@ def ensure_derived_features(df):
     if 'IsAlone' not in df.columns and 'FamilySize' in df.columns:
         df['IsAlone'] = (df['FamilySize'] == 1).astype(int)
     return df
+
+# ---------- TRAINING FUNCTION ----------
+def train_models(df, target_col='Survived'):
+    """Train a set of classifiers on the given DataFrame and save them."""
+    # Prepare features and target
+    X = df[FEATURE_NAMES].copy()
+    y = df[target_col]
+
+    # Define preprocessor
+    preprocessor = ColumnTransformer([
+        ('num', StandardScaler(), NUMERIC_FEATURES),
+        ('cat', OneHotEncoder(handle_unknown='ignore'), CATEGORICAL_FEATURES)
+    ])
+
+    # Split data (optional, but we keep it for validation)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    # Define models
+    models = {
+        'DecisionTree': DecisionTreeClassifier(random_state=42),
+        'RandomForest': RandomForestClassifier(random_state=42),
+        'GradientBoosting': GradientBoostingClassifier(random_state=42),
+        'KNN': KNeighborsClassifier(),
+        'LogisticRegression': LogisticRegression(random_state=42, max_iter=1000)
+    }
+
+    # Train and save each as a pipeline (preprocessor + model)
+    for name, clf in models.items():
+        pipeline = Pipeline(steps=[('preprocessor', preprocessor), ('classifier', clf)])
+        pipeline.fit(X_train, y_train)
+        # Save the pipeline
+        filename = f"{name}.pkl"
+        joblib.dump(pipeline, os.path.join(MODEL_DIR, filename))
+
+    # Save meta info (e.g., preprocessor, feature names, metrics)
+    meta = {
+        'preprocessor': preprocessor,
+        'feature_names': FEATURE_NAMES,
+        'target': target_col,
+    }
+    joblib.dump(meta, os.path.join(MODEL_DIR, 'meta.pkl'))
+
+    # Clear cached models so they are reloaded
+    st.cache_resource.clear()
+    st.success(f"✅ {len(models)} models trained and saved to `{MODEL_DIR}`.")
 
 # ---------- MODEL LOADER ----------
 @st.cache_resource
@@ -98,7 +143,7 @@ def load_meta():
         except:
             return None
 
-# ---------- PREPROCESSOR EXTRACTION (NO RETRAINING) ----------
+# ---------- PREPROCESSOR EXTRACTION ----------
 def get_preprocessor_from_models(models):
     """Try to extract a preprocessor from saved pipelines."""
     for model in models.values():
@@ -139,7 +184,7 @@ if page == "Project Details":
     - **Models**: Decision Tree, Random Forest, Gradient Boosting, KNN, Logistic Regression
     - **Best model**: `BEST_DecisionTree.pkl`
 
-    **Models are pre‑trained** – see the `train/` folder for training scripts.
+    **Models are trained on‑the‑fly** from the dataset you load.
     Use the sidebar to navigate.
     """)
 
@@ -179,6 +224,22 @@ elif page == "Dataset":
 
         csv = df.to_csv(index=False).encode('utf-8')
         st.download_button("Download CSV", data=csv, file_name="dataset.csv", mime="text/csv")
+
+        # ---------- TRAINING BUTTON ----------
+        st.subheader("Model Training")
+        if st.button("Train Models from this Dataset"):
+            if TARGET_COLUMN not in df.columns:
+                st.error(f"Target column '{TARGET_COLUMN}' not found in dataset.")
+            else:
+                # Check required features
+                missing = [f for f in FEATURE_NAMES if f not in df.columns]
+                if missing:
+                    st.warning(f"Missing features: {missing}. Please ensure all required features are present.")
+                else:
+                    with st.spinner("Training models... This may take a moment."):
+                        train_models(df)
+                    # Rerun to refresh model list and clear caches
+                    st.experimental_rerun()
     else:
         st.info("Please load a dataset using the method above.")
 
@@ -219,13 +280,13 @@ else:  # Prediction
 
     models = load_all_models()
     if not models:
-        st.error("No pre‑trained models found. Please ensure models are in `saved_models/`.")
+        st.warning("No models found. Please go to the Dataset page, load a dataset, and click 'Train Models from this Dataset'.")
         st.stop()
 
-    # Load preprocessor from meta or pipeline – no fitting from dataset
+    # Load preprocessor from meta or pipeline
     preprocessor = get_preprocessor_only()
     if preprocessor is None:
-        st.error("No preprocessor found. Please ensure `meta.pkl` is present or models are saved as pipelines.")
+        st.error("No preprocessor found. Please retrain models (go to Dataset page).")
         st.stop()
 
     model_choice = st.selectbox("Select a model", list(models.keys()))
