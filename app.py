@@ -190,22 +190,19 @@ if page == "Project Details":
 
 elif page == "Dataset":
     st.title("📊 Dataset")
-    st.write("Load your dataset by pasting CSV content below.")
+    st.write("Upload your CSV file to load the dataset.")
 
-    # Paste CSV data
-    st.subheader("Paste CSV Data")
-    csv_text = st.text_area("Paste the CSV content here (including header row):", height=200)
-    if st.button("Load from pasted CSV"):
-        if csv_text.strip():
-            try:
-                df = pd.read_csv(StringIO(csv_text))
-                df = ensure_derived_features(df)
-                st.session_state['df'] = df
-                st.success("Dataset loaded from pasted CSV successfully!")
-            except Exception as e:
-                st.error(f"Error parsing CSV: {e}")
-        else:
-            st.warning("Please paste some CSV data.")
+    # File uploader
+    uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
+    
+    if uploaded_file is not None:
+        try:
+            df = pd.read_csv(uploaded_file)
+            df = ensure_derived_features(df)
+            st.session_state['df'] = df
+            st.success("Dataset loaded successfully!")
+        except Exception as e:
+            st.error(f"Error reading CSV: {e}")
 
     # Display dataset if loaded
     if 'df' in st.session_state:
@@ -241,7 +238,7 @@ elif page == "Dataset":
                     # Rerun to refresh model list and clear caches
                     st.experimental_rerun()
     else:
-        st.info("Please load a dataset using the method above.")
+        st.info("Please upload a CSV file to get started.")
 
 elif page == "EDA":
     st.title("🔍 Exploratory Data Analysis")
