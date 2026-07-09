@@ -14,8 +14,6 @@ from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.neighbors import KNeighborsClassifier
 import warnings
 warnings.filterwarnings('ignore')
-import joblib
-import shutil
 
 # Page configuration
 st.set_page_config(
@@ -48,7 +46,6 @@ def load_titanic_data():
         return titanic
     except:
         # If seaborn fails, create sample data
-        st.warning("Using sample generated data")
         np.random.seed(42)
         n = 891
         titanic = pd.DataFrame({
@@ -110,61 +107,30 @@ def create_all_features(data):
     
     return X[final_features]
 
-# Function to clean incompatible models
-def clean_incompatible_models():
-    """Remove incompatible model files"""
+# Function to clean all existing models
+def clean_all_models():
+    """Remove all existing model files"""
     model_folder = 'saved_models'
     if os.path.exists(model_folder):
-        # Backup the folder
-        backup_folder = 'saved_models_backup'
-        if not os.path.exists(backup_folder):
-            shutil.copytree(model_folder, backup_folder)
-            st.info(f"📁 Backed up old models to {backup_folder}")
-        
-        # Remove all model files
         for file in os.listdir(model_folder):
-            if file.endswith('.pkl') and file != 'scaler.pkl':
+            if file.endswith('.pkl'):
                 file_path = os.path.join(model_folder, file)
                 try:
                     os.remove(file_path)
-                    st.info(f"🗑️ Removed incompatible model: {file}")
                 except:
                     pass
+        st.info("🗑️ Cleaned all old model files")
+    else:
+        os.makedirs(model_folder)
+        st.info("📁 Created saved_models folder")
 
-# Function to try loading model with different methods
-def load_model_with_fallback(file_path):
-    """Try multiple methods to load a pickle file"""
-    # Method 1: Try standard pickle
-    try:
-        with open(file_path, 'rb') as f:
-            return pickle.load(f)
-    except:
-        pass
-    
-    # Method 2: Try with joblib
-    try:
-        return joblib.load(file_path)
-    except:
-        pass
-    
-    # Method 3: Try with different pickle protocols
-    for protocol in [2, 3, 4]:
-        try:
-            with open(file_path, 'rb') as f:
-                return pickle.load(f)
-        except:
-            continue
-    
-    return None
-
-# Function to train and save models
+# Function to train fresh models
 @st.cache_resource
-def train_and_save_models():
-    """Train models and save them to saved_models folder"""
+def train_fresh_models():
+    """Train fresh models and save them"""
     
-    # Create saved_models folder if it doesn't exist
-    if not os.path.exists('saved_models'):
-        os.makedirs('saved_models')
+    # Clean old models first
+    clean_all_models()
     
     # Create all features
     X = create_all_features(df)
@@ -178,8 +144,8 @@ def train_and_save_models():
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
     
-    # Define models with simpler names
-    models = {
+    # Define models with clean names
+    models_dict = {
         'Logistic Regression': LogisticRegression(max_iter=1000, random_state=42),
         'Decision Tree': DecisionTreeClassifier(random_state=42),
         'Random Forest': RandomForestClassifier(random_state=42),
@@ -189,46 +155,63 @@ def train_and_save_models():
     
     # Train and save models
     trained_models = {}
-    for name, model in models.items():
+    model_folder = 'saved_models'
+    
+    for name, model in models_dict.items():
         try:
             # For KNN and LogisticRegression, use scaled data
             if name in ['KNN', 'Logistic Regression']:
                 model.fit(X_train_scaled, y_train)
+                # Test the model
+                test_pred = model.predict(X_test_scaled)
             else:
                 model.fit(X_train, y_train)
+                # Test the model
+                test_pred = model.predict(X_test)
             
-            # Save model with simple name
+            # Calculate test accuracy
+            test_accuracy = accuracy_score(y_test, test_pred)
+            
+            # Save model with clean name
             file_name = f'{name.replace(" ", "")}.pkl'
-            file_path = os.path.join('saved_models', file_name)
+            file_path = os.path.join(model_folder, file_name)
             with open(file_path, 'wb') as f:
                 pickle.dump(model, f)
             
             trained_models[name] = model
+            st.info(f"✅ Trained {name} (Test Accuracy: {test_accuracy:.4f})")
+            
         except Exception as e:
             st.warning(f"Could not train {name}: {str(e)}")
     
-    # Train and save BEST model (using Random Forest as best)
+    # Train and save BEST model
     try:
         best_model = RandomForestClassifier(n_estimators=100, random_state=42)
         best_model.fit(X_train, y_train)
-        best_path = os.path.join('saved_models', 'BestModel.pkl')
+        best_test_pred = best_model.predict(X_test)
+        best_accuracy = accuracy_score(y_test, best_test_pred)
+        
+        best_path = os.path.join(model_folder, 'BestModel.pkl')
         with open(best_path, 'wb') as f:
             pickle.dump(best_model, f)
         trained_models['Best Model'] = best_model
+        st.info(f"✅ Trained Best Model (Test Accuracy: {best_accuracy:.4f})")
+        
     except Exception as e:
         st.warning(f"Could not train Best Model: {str(e)}")
     
     # Save scaler
     try:
-        scaler_path = os.path.join('saved_models', 'scaler.pkl')
+        scaler_path = os.path.join(model_folder, 'scaler.pkl')
         with open(scaler_path, 'wb') as f:
             pickle.dump(scaler, f)
     except Exception as e:
         st.warning(f"Could not save scaler: {str(e)}")
     
+    st.success("✅ All models trained successfully!")
     return trained_models
 
-# Load models with fallback
+# Load models
 @st.cache_resource
 def load_models():
     models = {}
@@ -236,83 +219,79 @@ def load_models():
     
     # Check if folder exists
     if not os.path.exists(model_folder):
-        st.info("Training models for the first time... Please wait.")
-        return train_and_save_models()
+        st.info("📁 No models found. Training fresh models...")
+        return train_fresh_models()
     
-    # List all .pkl files in the folder - exclude scaler and meta
+    # List all model files
     model_files = [f for f in os.listdir(model_folder) 
                    if f.endswith('.pkl') and f not in ['scaler.pkl', 'meta.pkl']]
     
     if not model_files:
-        st.info("No models found. Training models... Please wait.")
-        return train_and_save_models()
+        st.info("📁 No model files found. Training fresh models...")
+        return train_fresh_models()
     
     # Try to load each model
-    loaded_count = 0
+    loaded_models = {}
     for model_file in model_files:
         file_path = os.path.join(model_folder, model_file)
         try:
-            # Try to load with fallback methods
-            model = load_model_with_fallback(file_path)
-            
-            if model is not None and hasattr(model, 'predict'):
-                model_name = model_file.replace('.pkl', '')
-                # Rename for display
-                if model_name == 'BestModel':
-                    model_name = 'Best Model'
-                elif model_name == 'LogisticRegression':
-                    model_name = 'Logistic Regression'
-                elif model_name == 'DecisionTree':
-                    model_name = 'Decision Tree'
-                elif model_name == 'RandomForest':
-                    model_name = 'Random Forest'
-                elif model_name == 'GradientBoosting':
-                    model_name = 'Gradient Boosting'
+            with open(file_path, 'rb') as f:
+                model = pickle.load(f)
                 
-                # Verify model works with our data
+            # Verify it's a valid model
+            if hasattr(model, 'predict') and hasattr(model, 'predict_proba'):
+                # Test if model works with our data
                 try:
                     test_X = create_all_features(df.head(1))
                     test_pred = model.predict(test_X)
-                    models[model_name] = model
-                    loaded_count += 1
+                    
+                    # Model is valid
+                    model_name = model_file.replace('.pkl', '')
+                    # Rename for display
+                    if model_name == 'BestModel':
+                        model_name = 'Best Model'
+                    elif model_name == 'LogisticRegression':
+                        model_name = 'Logistic Regression'
+                    elif model_name == 'DecisionTree':
+                        model_name = 'Decision Tree'
+                    elif model_name == 'RandomForest':
+                        model_name = 'Random Forest'
+                    elif model_name == 'GradientBoosting':
+                        model_name = 'Gradient Boosting'
+                    
+                    loaded_models[model_name] = model
                 except Exception as e:
-                    st.sidebar.warning(f"Model {model_name} incompatible with current data: {str(e)}")
+                    st.warning(f"Model {model_file} incompatible with current data: {str(e)}")
                     # Remove incompatible model
                     try:
                         os.remove(file_path)
-                        st.sidebar.info(f"Removed incompatible model: {model_file}")
+                        st.info(f"🗑️ Removed incompatible model: {model_file}")
                     except:
                         pass
             else:
-                st.sidebar.warning(f"Could not load {model_file} - invalid model")
+                st.warning(f"Invalid model: {model_file}")
                 # Remove invalid model
                 try:
                     os.remove(file_path)
                 except:
                     pass
         except Exception as e:
-            st.sidebar.warning(f"Could not load {model_file}: {str(e)}")
-            # Remove problematic model
+            st.warning(f"Could not load {model_file}: {str(e)}")
+            # Remove corrupted model
             try:
                 os.remove(file_path)
+                st.info(f"🗑️ Removed corrupted model: {model_file}")
             except:
                 pass
     
-    # If no models loaded successfully, clean and retrain
-    if not models:
-        st.info("No compatible models found. Cleaning and retraining...")
-        # Clean the folder
-        for file in os.listdir(model_folder):
-            if file.endswith('.pkl') and file not in ['scaler.pkl']:
-                try:
-                    os.remove(os.path.join(model_folder, file))
-                except:
-                    pass
-        return train_and_save_models()
+    # If no models loaded, train fresh
+    if not loaded_models:
+        st.info("🔄 No compatible models found. Training fresh models...")
+        return train_fresh_models()
     
-    return models
+    return loaded_models
 
-# Load models (will train if needed)
+# Load models
 with st.spinner("Loading models..."):
     models = load_models()
 
@@ -616,7 +595,7 @@ elif page == "🤖 Model Comparison":
         if not valid_models:
             st.warning("No valid models found. Retraining...")
             with st.spinner("Training models... Please wait."):
-                models = train_and_save_models()
+                models = train_fresh_models()
                 st.success("Models trained successfully!")
                 st.rerun()
         else:
@@ -735,9 +714,9 @@ elif page == "🤖 Model Comparison":
             else:
                 st.warning("No models could be evaluated")
     else:
-        st.warning("No models found! Training models with current environment...")
+        st.warning("No models found! Training fresh models...")
         with st.spinner("Training models... Please wait."):
-            models = train_and_save_models()
+            models = train_fresh_models()
             st.success("Models trained successfully!")
             st.rerun()
 
@@ -909,9 +888,9 @@ else:
             except Exception as e:
                 st.error(f"An error occurred: {str(e)}")
     else:
-        st.warning("No valid models found for prediction. Training models with current environment...")
+        st.warning("No valid models found for prediction. Training fresh models...")
         with st.spinner("Training models... Please wait."):
-            models = train_and_save_models()
+            models = train_fresh_models()
             st.success("Models trained successfully!")
             st.rerun()
 
