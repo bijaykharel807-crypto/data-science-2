@@ -52,7 +52,18 @@ def load_model(model_filename):
 def list_models():
     if not os.path.isdir(MODELS_DIR):
         return []
-    return sorted([f for f in os.listdir(MODELS_DIR) if f.endswith(".pkl")])
+    excluded_names = {"scaler.pkl", "encoder.pkl", "preprocessor.pkl"}
+    candidates = sorted([f for f in os.listdir(MODELS_DIR) if f.endswith(".pkl") and f not in excluded_names])
+
+    valid_models = []
+    for f in candidates:
+        try:
+            obj = load_model(f)
+            if hasattr(obj, "predict"):
+                valid_models.append(f)
+        except Exception:
+            continue
+    return valid_models
 
 
 def _proba(m, X):
