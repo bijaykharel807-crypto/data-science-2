@@ -1,770 +1,323 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import pickle
+import joblib
 import os
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, classification_report
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LogisticRegression
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from sklearn.neighbors import KNeighborsClassifier
-import warnings
-warnings.filterwarnings('ignore')
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 
-# Page configuration
-st.set_page_config(
-    page_title="Titanic Survivor Prediction",
-    page_icon="🚢",
-    layout="wide"
-)
+try:
+    from streamlit_option_menu import option_menu
+    HAS_OPTION_MENU = True
+except ImportError:
+    HAS_OPTION_MENU = False
 
-# Title and description
-st.title("🚢 Titanic Survivor Prediction Dashboard")
-st.markdown("An interactive machine learning app to explore Titanic data and predict passenger survival.")
+st.set_page_config(page_title="Titanic Survival Prediction Dashboard", page_icon="🚢", layout="wide")
 
-# Navigation
-st.sidebar.markdown("## 📍 Navigation")
-page = st.sidebar.radio(
-    "Select Page",
-    ["📊 Dataset", "📈 EDA", "🤖 Model Comparison", "🎯 Prediction"],
-    index=0
-)
+MODELS_DIR = "saved_models"
+TARGET_COL = "survived"
 
-# Load Titanic dataset with only required columns
+RAW_FEATURE_COLS = ["pclass", "sex", "age", "sibsp", "parch", "fare", "embarked"]
+CATEGORICAL_COLS = ["sex", "embarked", "pclass"]
+
+LABEL_MAPS = {
+    "sex": {"male": 1, "female": 0},
+    "embarked": {"S": 2, "C": 0, "Q": 1},
+}
+
+
+# ---------------------------------------------------------
+# Cached loaders
+# ---------------------------------------------------------
 @st.cache_data
-def load_titanic_data():
+def load_dataset():
+    """Loads the Titanic dataset directly from seaborn's built-in data repo — no CSV file needed."""
     try:
-        import seaborn as sns
-        titanic = sns.load_dataset('titanic')
-        # Keep only required columns
-        required_cols = ['survived', 'pclass', 'sex', 'age', 'sibsp', 'parch', 'fare', 'embarked']
-        titanic = titanic[required_cols]
-        return titanic
-    except:
-        # If seaborn fails, create sample data
-        np.random.seed(42)
-        n = 891
-        titanic = pd.DataFrame({
-            'survived': np.random.choice([0, 1], n, p=[0.6, 0.4]),
-            'pclass': np.random.choice([1, 2, 3], n, p=[0.25, 0.25, 0.5]),
-            'sex': np.random.choice(['male', 'female'], n, p=[0.6, 0.4]),
-            'age': np.random.normal(30, 14, n).clip(1, 80),
-            'sibsp': np.random.choice([0, 1, 2, 3, 4], n, p=[0.6, 0.2, 0.1, 0.07, 0.03]),
-            'parch': np.random.choice([0, 1, 2, 3, 4], n, p=[0.7, 0.15, 0.08, 0.05, 0.02]),
-            'fare': np.random.exponential(32, n).clip(0, 512),
-            'embarked': np.random.choice(['C', 'Q', 'S'], n, p=[0.2, 0.1, 0.7])
-        })
-        # Add some missing values
-        titanic.loc[np.random.choice(n, 100), 'age'] = np.nan
-        titanic.loc[np.random.choice(n, 20), 'embarked'] = np.nan
-        return titanic
+        raw = sns.load_dataset("titanic")
+    except Exception:
+        return None
+    df = raw[["survived", "pclass", "sex", "age", "sibsp", "parch", "fare", "embarked"]].copy()
+    df["age"] = df["age"].fillna(df["age"].median())
+    df["embarked"] = df["embarked"].fillna(df["embarked"].mode()[0])
+    df["fare"] = df["fare"].fillna(df["fare"].median())
+    return df
 
-df = load_titanic_data()
 
-# Function to create all features needed for the model
-def create_all_features(data):
-    """Create all features including engineered features"""
-    # Create a copy
-    X = data.copy()
-    
-    # Fill missing values
-    X['age'] = X['age'].fillna(X['age'].median())
-    X['fare'] = X['fare'].fillna(X['fare'].median())
-    X['embarked'] = X['embarked'].fillna('S')
-    
-    # Encode categorical variables
-    X['sex'] = X['sex'].map({'male': 0, 'female': 1})
-    X['embarked'] = X['embarked'].map({'C': 0, 'Q': 1, 'S': 2})
-    
-    # Create family size feature
-    X['FamilySize'] = X['sibsp'] + X['parch'] + 1
-    
-    # Create IsAlone feature
-    X['IsAlone'] = (X['FamilySize'] == 1).astype(int)
-    
-    # Rename columns to match model expectations
-    X = X.rename(columns={
-        'pclass': 'Pclass',
-        'sex': 'Sex',
-        'age': 'Age',
-        'sibsp': 'SibSp',
-        'parch': 'Parch',
-        'fare': 'Fare',
-        'embarked': 'Embarked'
-    })
-    
-    # Select final features in correct order
-    final_features = ['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked', 'FamilySize', 'IsAlone']
-    
-    # Ensure all required columns exist
-    for col in final_features:
-        if col not in X.columns:
-            X[col] = 0
-    
-    return X[final_features]
-
-# Function to load all models from saved_models folder
 @st.cache_resource
-def load_all_models():
-    """Load all models from saved_models folder"""
-    models = {}
-    model_folder = 'saved_models'
-    
-    # Check if folder exists
-    if not os.path.exists(model_folder):
-        st.error(f"❌ Folder '{model_folder}' not found!")
-        st.info("Please create a 'saved_models' folder and add your model files.")
-        return models
-    
-    # List all .pkl files in the folder
-    model_files = [f for f in os.listdir(model_folder) if f.endswith('.pkl')]
-    
-    if not model_files:
-        st.warning(f"No .pkl files found in '{model_folder}' folder!")
-        return models
-    
-    st.info(f"📁 Found {len(model_files)} model files in '{model_folder}'")
-    
-    # Load each model
-    loaded_count = 0
-    for model_file in model_files:
-        file_path = os.path.join(model_folder, model_file)
+def load_model(model_filename):
+    return joblib.load(os.path.join(MODELS_DIR, model_filename))
+
+
+def list_models():
+    if not os.path.isdir(MODELS_DIR):
+        return []
+    return sorted([f for f in os.listdir(MODELS_DIR) if f.endswith(".pkl")])
+
+
+def _proba(m, X):
+    if hasattr(m, "predict_proba"):
+        return m.predict_proba(X)[:, 1] * 100
+    preds = m.predict(X)
+    return np.array(preds, dtype=float) * 100
+
+
+def build_onehot_10col(raw_df):
+    """
+    Builds the specific 10-column one-hot encoding your saved models expect:
+    pclass, sex_female, sex_male, age, sibsp, parch, fare,
+    embarked_C, embarked_Q, embarked_S
+    (5 numeric passthrough + sex one-hot(2) + embarked one-hot(3), drop_first=False)
+    """
+    encoded = pd.get_dummies(raw_df, columns=["sex", "embarked"], drop_first=False)
+    for col in ["sex_female", "sex_male", "embarked_C", "embarked_Q", "embarked_S"]:
+        if col not in encoded.columns:
+            encoded[col] = 0
+    ordered_cols = ["pclass", "sex_female", "sex_male", "age", "sibsp", "parch",
+                     "fare", "embarked_C", "embarked_Q", "embarked_S"]
+    return encoded[ordered_cols]
+
+
+def get_probability(model, X_input):
+    """
+    Returns survival probability (%) for each row in X_input.
+    Tries encodings in order of likelihood, based on the models' expected
+    feature count (10 = one-hot encoded sex + embarked, no drop_first).
+    """
+    # 1. The specific 10-column one-hot encoding (most likely match)
+    try:
+        return _proba(model, build_onehot_10col(X_input))
+    except Exception:
+        pass
+
+    # 2. Raw input as-is (works if model is a full Pipeline with its own preprocessing)
+    try:
+        return _proba(model, X_input)
+    except Exception:
+        pass
+
+    # 3. One-hot encode, align to model.feature_names_in_ if available
+    if hasattr(model, "feature_names_in_"):
+        expected = list(model.feature_names_in_)
+        encoded = pd.get_dummies(X_input)
+        for col in expected:
+            if col not in encoded.columns:
+                encoded[col] = 0
+        encoded = encoded.reindex(columns=expected, fill_value=0)
         try:
-            with open(file_path, 'rb') as f:
-                model = pickle.load(f)
-            
-            # Check if it's a valid model
-            if hasattr(model, 'predict') and hasattr(model, 'predict_proba'):
-                # Get model name without extension
-                model_name = model_file.replace('.pkl', '')
-                
-                # Rename for better display
-                display_name = model_name
-                if model_name == 'BEST_DecisionTree':
-                    display_name = 'Best Decision Tree'
-                elif model_name == 'DecisionTree':
-                    display_name = 'Decision Tree'
-                elif model_name == 'GradientBoosting':
-                    display_name = 'Gradient Boosting'
-                elif model_name == 'LogisticRegression':
-                    display_name = 'Logistic Regression'
-                elif model_name == 'RandomForest':
-                    display_name = 'Random Forest'
-                
-                models[display_name] = model
-                loaded_count += 1
-                st.sidebar.success(f"✅ Loaded: {display_name}")
-            else:
-                st.sidebar.warning(f"⚠️ {model_file} is not a valid model")
-                
-        except Exception as e:
-            st.sidebar.error(f"❌ Failed to load {model_file}: {str(e)}")
-    
-    st.info(f"✅ Successfully loaded {loaded_count} models")
-    return models
+            return _proba(model, encoded)
+        except Exception:
+            pass
 
-# Load all models
-with st.spinner("Loading models from saved_models folder..."):
-    models = load_all_models()
+    # 4. Simple label encoding (last resort)
+    label_df = X_input.copy()
+    for col, mapping in LABEL_MAPS.items():
+        if col in label_df.columns:
+            label_df[col] = label_df[col].map(mapping)
+    return _proba(model, label_df)  # let this raise if it still fails
 
-# Show model status in sidebar
-st.sidebar.markdown("---")
-st.sidebar.subheader("📦 Model Status")
-if models:
-    st.sidebar.success(f"✅ {len(models)} models loaded successfully")
-    with st.sidebar.expander("📋 View All Models"):
-        for name in models.keys():
-            st.sidebar.write(f"• {name}")
-else:
-    st.sidebar.error("❌ No models loaded!")
-    st.sidebar.info("""
-    **How to fix:**
-    1. Create a folder named 'saved_models'
-    2. Add your .pkl model files
-    3. Restart the app
+
+# ---------------------------------------------------------
+# Sidebar navigation
+# ---------------------------------------------------------
+PAGES = ["Project Details", "Dataset", "EDA", "Model Comparison", "Prediction"]
+
+with st.sidebar:
+    if HAS_OPTION_MENU:
+        page = option_menu(
+            menu_title="Navigation",
+            options=PAGES,
+            icons=["info-circle", "bar-chart", "graph-up", "bullseye", "target"],
+            menu_icon="list",
+            default_index=1,
+            styles={
+                "container": {"padding": "10px", "background-color": "#f4f5f7"},
+                "icon": {"font-size": "16px"},
+                "nav-link": {"font-size": "14px", "text-align": "left", "margin": "3px", "border-radius": "8px"},
+                "nav-link-selected": {"background-color": "#ffffff", "color": "#e11d48", "font-weight": "600"},
+            },
+        )
+    else:
+        st.markdown("### Navigation")
+        page = st.radio("Select Page", PAGES, index=1, label_visibility="collapsed")
+
+df = load_dataset()
+
+
+# ---------------------------------------------------------
+# PAGE: Project Details
+# ---------------------------------------------------------
+if page == "Project Details":
+    st.title("🚢 Titanic Survival Prediction Dashboard")
+    st.write("An interactive machine learning app to explore Titanic passenger data and predict survival probability.")
+
+    st.subheader("About this project")
+    st.markdown("""
+    - **Dataset** — preview Titanic passenger data (loaded automatically, no file upload needed)
+    - **EDA** — explore survival patterns by class, sex, age, and fare
+    - **Model Comparison** — compare saved classification models by accuracy, precision, recall, F1, ROC-AUC
+    - **Prediction** — enter passenger details and get a predicted survival **probability (%)**
     """)
 
-# Remove meta model if it exists
-if 'meta' in models:
-    del models['meta']
-
-# -------------------- PAGE 1: DATASET --------------------
-if page == "📊 Dataset":
-    st.header("📊 Dataset Preview")
-    
-    # Select number of rows
-    num_rows = st.selectbox(
-        "Select number of rows to view",
-        options=[5, 10, 20, 50, 100],
-        index=0
-    )
-    
-    # Create a copy of the dataframe for display
-    display_df = df.head(num_rows).copy()
-    
-    # Rename columns for better readability
-    column_mapping = {
-        'survived': 'Survived',
-        'pclass': 'Passenger Class',
-        'sex': 'Sex',
-        'age': 'Age',
-        'sibsp': 'Siblings/Spouses',
-        'parch': 'Parents/Children',
-        'fare': 'Fare',
-        'embarked': 'Embarked'
-    }
-    
-    # Only rename columns that exist
-    for old_name, new_name in column_mapping.items():
-        if old_name in display_df.columns:
-            display_df = display_df.rename(columns={old_name: new_name})
-    
-    # Display table
-    st.dataframe(display_df, use_container_width=True)
-    
-    st.write("---")
-    
-    # Shape of dataset
-    st.subheader("Shape of Dataset:")
-    st.write(f"({df.shape[0]}, {df.shape[1]})")
-    
-    st.write("---")
-    
-    # Statistical Summary
-    st.subheader("Statistical Summary:")
-    
-    # Select numeric columns
-    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    if 'survived' in numeric_cols:
-        numeric_cols.remove('survived')
-    
-    # Create summary
-    if numeric_cols:
-        summary_df = df[numeric_cols].describe()
-        
-        # Rename columns for better display
-        summary_columns_mapping = {
-            'pclass': 'Passenger Class',
-            'age': 'Age',
-            'sibsp': 'Siblings/Spouses',
-            'parch': 'Parents/Children',
-            'fare': 'Fare'
-        }
-        
-        # Rename columns that exist
-        for old_name, new_name in summary_columns_mapping.items():
-            if old_name in summary_df.columns:
-                summary_df = summary_df.rename(columns={old_name: new_name})
-        
-        # Display summary
-        st.dataframe(summary_df.round(2), use_container_width=True)
+    if df is not None:
+        st.info(f"Dataset loaded: **{df.shape[0]} rows × {df.shape[1]} columns** (via seaborn's built-in Titanic dataset)")
     else:
-        st.info("No numeric columns found for statistical summary")
+        st.warning("Could not load the Titanic dataset. Check your internet connection (it's fetched from seaborn's data repo on first run).")
 
-# -------------------- PAGE 2: EDA --------------------
-elif page == "📈 EDA":
-    st.header("📈 Exploratory Data Analysis")
-    
-    # Create tabs for different EDA sections
-    tab1, tab2, tab3, tab4 = st.tabs(["Distributions", "Correlations", "Survival Analysis", "Missing Values"])
-    
-    with tab1:
-        st.subheader("Feature Distributions")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Age distribution
-            if 'age' in df.columns:
-                fig, ax = plt.subplots(figsize=(8, 5))
-                df['age'].dropna().hist(bins=30, edgecolor='black', alpha=0.7)
-                ax.set_title('Age Distribution')
-                ax.set_xlabel('Age')
-                ax.set_ylabel('Frequency')
-                st.pyplot(fig)
-                plt.close()
-            else:
-                st.info("Age column not found")
-        
-        with col2:
-            # Fare distribution
-            if 'fare' in df.columns:
-                fig, ax = plt.subplots(figsize=(8, 5))
-                df['fare'].hist(bins=30, edgecolor='black', alpha=0.7)
-                ax.set_title('Fare Distribution')
-                ax.set_xlabel('Fare (£)')
-                ax.set_ylabel('Frequency')
-                st.pyplot(fig)
-                plt.close()
-            else:
-                st.info("Fare column not found")
-        
-        col3, col4 = st.columns(2)
-        
-        with col3:
-            # Passenger Class distribution
-            if 'pclass' in df.columns:
-                fig, ax = plt.subplots(figsize=(8, 5))
-                df['pclass'].value_counts().sort_index().plot(kind='bar', ax=ax)
-                ax.set_title('Passenger Class Distribution')
-                ax.set_xlabel('Passenger Class')
-                ax.set_ylabel('Count')
-                ax.set_xticklabels(['First', 'Second', 'Third'])
-                st.pyplot(fig)
-                plt.close()
-            else:
-                st.info("Passenger Class column not found")
-        
-        with col4:
-            # Sex distribution
-            if 'sex' in df.columns:
-                fig, ax = plt.subplots(figsize=(8, 5))
-                df['sex'].value_counts().plot(kind='bar', ax=ax)
-                ax.set_title('Sex Distribution')
-                ax.set_xlabel('Sex')
-                ax.set_ylabel('Count')
-                st.pyplot(fig)
-                plt.close()
-            else:
-                st.info("Sex column not found")
-    
-    with tab2:
-        st.subheader("Correlation Analysis")
-        
-        # Correlation matrix
-        numeric_df = df.select_dtypes(include=[np.number])
-        if not numeric_df.empty:
-            corr_matrix = numeric_df.corr()
-            
-            fig, ax = plt.subplots(figsize=(10, 8))
-            sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', center=0, fmt='.2f', ax=ax)
-            ax.set_title('Correlation Matrix')
-            st.pyplot(fig)
-            plt.close()
-            
-            # Show top correlations with survived
-            if 'survived' in corr_matrix.columns:
-                st.subheader("Top Correlations with Survival")
-                survived_corr = corr_matrix['survived'].drop('survived').sort_values(ascending=False)
-                corr_df = pd.DataFrame({
-                    'Feature': survived_corr.index,
-                    'Correlation': survived_corr.values
-                })
-                st.dataframe(corr_df, use_container_width=True)
-        else:
-            st.info("No numeric columns found for correlation analysis")
-    
-    with tab3:
-        st.subheader("Survival Analysis")
-        
-        if 'survived' in df.columns:
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Survival by Passenger Class
-                if 'pclass' in df.columns:
-                    fig, ax = plt.subplots(figsize=(8, 5))
-                    survival_by_class = df.groupby('pclass')['survived'].mean()
-                    survival_by_class.plot(kind='bar', ax=ax)
-                    ax.set_title('Survival Rate by Passenger Class')
-                    ax.set_xlabel('Passenger Class')
-                    ax.set_ylabel('Survival Rate')
-                    ax.set_xticklabels(['First', 'Second', 'Third'])
-                    ax.set_ylim(0, 1)
-                    st.pyplot(fig)
-                    plt.close()
-                    
-                    # Show values
-                    st.write("Survival Rates:")
-                    survival_df = pd.DataFrame({
-                        'Passenger Class': ['First', 'Second', 'Third'],
-                        'Survival Rate': survival_by_class.values
-                    })
-                    survival_df['Survival Rate'] = survival_df['Survival Rate'] * 100
-                    survival_df['Survival Rate'] = survival_df['Survival Rate'].round(2).astype(str) + '%'
-                    st.dataframe(survival_df, use_container_width=True)
-                else:
-                    st.info("Passenger Class column not found")
-            
-            with col2:
-                # Survival by Sex
-                if 'sex' in df.columns:
-                    fig, ax = plt.subplots(figsize=(8, 5))
-                    survival_by_sex = df.groupby('sex')['survived'].mean()
-                    survival_by_sex.plot(kind='bar', ax=ax)
-                    ax.set_title('Survival Rate by Sex')
-                    ax.set_xlabel('Sex')
-                    ax.set_ylabel('Survival Rate')
-                    ax.set_ylim(0, 1)
-                    st.pyplot(fig)
-                    plt.close()
-                    
-                    # Show values
-                    st.write("Survival Rates:")
-                    survival_df = pd.DataFrame({
-                        'Sex': ['Female', 'Male'],
-                        'Survival Rate': survival_by_sex.values
-                    })
-                    survival_df['Survival Rate'] = survival_df['Survival Rate'] * 100
-                    survival_df['Survival Rate'] = survival_df['Survival Rate'].round(2).astype(str) + '%'
-                    st.dataframe(survival_df, use_container_width=True)
-                else:
-                    st.info("Sex column not found")
-            
-            # Age vs Survival
-            if 'age' in df.columns:
-                st.subheader("Age vs Survival")
-                fig, ax = plt.subplots(figsize=(10, 6))
-                df['age_bin'] = pd.cut(df['age'], bins=10)
-                survival_by_age = df.groupby('age_bin')['survived'].mean()
-                survival_by_age.plot(kind='bar', ax=ax)
-                ax.set_title('Survival Rate by Age Group')
-                ax.set_xlabel('Age Group')
-                ax.set_ylabel('Survival Rate')
-                ax.set_ylim(0, 1)
-                st.pyplot(fig)
-                plt.close()
-                df = df.drop('age_bin', axis=1)
-        else:
-            st.info("Survived column not found")
-    
-    with tab4:
-        st.subheader("Missing Values Analysis")
-        
-        # Calculate missing values
-        missing_data = df.isnull().sum()
-        missing_percentage = (missing_data / len(df)) * 100
-        
-        missing_df = pd.DataFrame({
-            'Column': missing_data.index,
-            'Missing Values': missing_data.values,
-            'Percentage': missing_percentage.values
-        })
-        
-        # Filter columns with missing values
-        missing_df = missing_df[missing_df['Missing Values'] > 0]
-        
-        if len(missing_df) > 0:
-            st.dataframe(missing_df, use_container_width=True)
-            
-            # Visualize missing data
-            fig, ax = plt.subplots(figsize=(10, 6))
-            ax.bar(missing_df['Column'], missing_df['Missing Values'])
-            ax.set_title('Missing Values by Column')
-            ax.set_xlabel('Column')
-            ax.set_ylabel('Missing Values Count')
-            plt.xticks(rotation=45)
-            st.pyplot(fig)
-            plt.close()
-        else:
-            st.success("✅ No missing values found in the dataset!")
-
-# -------------------- PAGE 3: MODEL COMPARISON --------------------
-elif page == "🤖 Model Comparison":
-    st.header("🤖 Model Comparison")
-    
+    st.subheader("Models available")
+    models = list_models()
     if models:
-        # Remove any non-model objects
-        valid_models = {}
-        for name, model in models.items():
-            if hasattr(model, 'predict') and hasattr(model, 'predict_proba'):
-                valid_models[name] = model
-        
-        if not valid_models:
-            st.warning("No valid models found!")
-        else:
-            # Prepare data for model evaluation with all features
-            def prepare_data():
-                # Create all features
-                X = create_all_features(df)
-                y = df['survived']
-                return X, y
-            
-            X, y = prepare_data()
-            
-            # Evaluate all models
-            results = []
-            for name, model in valid_models.items():
-                try:
-                    # Make predictions
-                    predictions = model.predict(X)
-                    
-                    # Calculate metrics
-                    accuracy = accuracy_score(y, predictions)
-                    precision = precision_score(y, predictions, average='binary')
-                    recall = recall_score(y, predictions, average='binary')
-                    f1 = f1_score(y, predictions, average='binary')
-                    
-                    results.append({
-                        'Model': name,
-                        'Accuracy': accuracy,
-                        'Precision': precision,
-                        'Recall': recall,
-                        'F1 Score': f1
-                    })
-                except Exception as e:
-                    st.warning(f"Could not evaluate {name}: {str(e)}")
-            
-            if results:
-                # Convert to DataFrame
-                results_df = pd.DataFrame(results)
-                results_df = results_df.sort_values('Accuracy', ascending=False)
-                
-                # Display model comparison
-                st.subheader("📊 Model Accuracy Comparison")
-                
-                # Create the accuracy table
-                accuracy_table = results_df[['Model', 'Accuracy']].copy()
-                accuracy_table['Accuracy'] = (accuracy_table['Accuracy'] * 100).round(2)
-                st.dataframe(accuracy_table, use_container_width=True)
-                
-                # Create the bar chart
-                st.subheader("📈 Model Accuracy Visualization")
-                
-                fig, ax = plt.subplots(figsize=(10, 6))
-                
-                # Get model names and accuracies
-                model_names = results_df['Model'].values
-                accuracies = (results_df['Accuracy'].values * 100).round(2)
-                
-                # Create bars with different colors
-                colors = ['#4CAF50' if i == 0 else '#2196F3' for i in range(len(model_names))]
-                bars = ax.bar(model_names, accuracies, color=colors, width=0.6)
-                
-                # Customize the chart
-                ax.set_xlabel('Models', fontsize=12)
-                ax.set_ylabel('Accuracy (%)', fontsize=12)
-                ax.set_title('Model Accuracy Comparison', fontsize=14, fontweight='bold')
-                ax.set_ylim(0, 100)
-                
-                # Add value labels on top of bars
-                for bar, acc in zip(bars, accuracies):
-                    height = bar.get_height()
-                    ax.text(bar.get_x() + bar.get_width()/2., height + 1,
-                            f'{acc:.1f}%', ha='center', va='bottom', fontsize=11)
-                
-                # Add grid for better readability
-                ax.grid(axis='y', alpha=0.3)
-                ax.set_axisbelow(True)
-                
-                st.pyplot(fig)
-                plt.close()
-                
-                # Best model highlight
-                best_model = results_df.iloc[0]
-                st.success(f"🏆 **Best Model:** {best_model['Model']} with accuracy {best_model['Accuracy']*100:.2f}%")
-                
-                # Show all metrics for the best model
-                with st.expander("📋 View All Model Metrics"):
-                    # Display all metrics
-                    display_df = results_df.copy()
-                    for col in ['Accuracy', 'Precision', 'Recall', 'F1 Score']:
-                        display_df[col] = (display_df[col] * 100).round(2).astype(str) + '%'
-                    
-                    st.dataframe(display_df, use_container_width=True)
-                    
-                    # Confusion Matrix for best model
-                    st.subheader("🔍 Best Model - Confusion Matrix")
-                    
-                    # Predict with best model
-                    best_model_obj = valid_models[best_model['Model']]
-                    predictions = best_model_obj.predict(X)
-                    
-                    cm = confusion_matrix(y, predictions)
-                    fig, ax = plt.subplots(figsize=(6, 5))
-                    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax)
-                    ax.set_xlabel('Predicted')
-                    ax.set_ylabel('Actual')
-                    ax.set_title(f'Confusion Matrix - {best_model["Model"]}')
-                    st.pyplot(fig)
-                    plt.close()
-                    
-                    # Classification Report
-                    st.subheader("📋 Detailed Classification Report")
-                    report = classification_report(y, predictions, target_names=['Not Survived', 'Survived'], output_dict=True)
-                    report_df = pd.DataFrame(report).transpose()
-                    report_df = report_df.round(4)
-                    st.dataframe(report_df, use_container_width=True)
-            else:
-                st.warning("No models could be evaluated")
+        st.write(", ".join(m.replace(".pkl", "") for m in models))
     else:
-        st.error("❌ No models loaded! Please add model files to 'saved_models' folder.")
+        st.warning(f"No `.pkl` files found in `{MODELS_DIR}/`.")
 
-# -------------------- PAGE 4: PREDICTION --------------------
-else:
-    st.header("🎯 Make Prediction")
-    
-    # Remove meta model if it exists
-    if 'meta' in models:
-        del models['meta']
-    
-    # Filter valid models
-    valid_models = {}
-    for name, model in models.items():
-        if hasattr(model, 'predict') and hasattr(model, 'predict_proba'):
-            valid_models[name] = model
-    
-    if valid_models:
-        # Model selection
-        selected_model_name = st.selectbox(
-            "Select Model for Prediction",
-            options=list(valid_models.keys()),
-            help="Choose the model you want to use for prediction"
-        )
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            pclass = st.selectbox(
-                "Passenger Class",
-                options=[1, 2, 3],
-                format_func=lambda x: f"{x} - {'First' if x==1 else 'Second' if x==2 else 'Third'} Class"
-            )
-            
-            sex = st.radio(
-                "Sex",
-                options=["Male", "Female"],
-                horizontal=True
-            )
-            sex_encoded = 0 if sex == "Male" else 1
-            
-            age = st.slider(
-                "Age (years)",
-                min_value=1,
-                max_value=100,
-                value=30
-            )
-        
-        with col2:
-            sibsp = st.number_input(
-                "Number of Siblings/Spouses Aboard",
-                min_value=0,
-                max_value=10,
-                value=0
-            )
-            
-            parch = st.number_input(
-                "Number of Parents/Children Aboard",
-                min_value=0,
-                max_value=10,
-                value=0
-            )
-            
-            fare = st.number_input(
-                "Ticket Fare (£)",
-                min_value=0.0,
-                max_value=512.0,
-                value=32.0,
-                step=0.1,
-                format="%.2f"
-            )
-            
-            embarked = st.selectbox(
-                "Port of Embarkation",
-                options=["C", "Q", "S"],
-                format_func=lambda x: {"C": "Cherbourg", "Q": "Queenstown", "S": "Southampton"}[x]
-            )
-        
-        # Prediction button
-        predict_button = st.button("🔮 Predict Survival", use_container_width=True)
-        
-        # Preprocess function for prediction
-        def preprocess_input(data):
-            # Create a dataframe with all features
-            input_df = pd.DataFrame([{
-                'pclass': data['pclass'],
-                'sex': data['sex'],
-                'age': data['age'],
-                'sibsp': data['sibsp'],
-                'parch': data['parch'],
-                'fare': data['fare'],
-                'embarked': data['embarked']
-            }])
-            
-            # Use the same feature engineering function
-            X = create_all_features(input_df)
-            
-            return X
-        
-        if predict_button:
-            try:
-                input_data = {
-                    'pclass': pclass,
-                    'sex': sex_encoded,
-                    'age': age,
-                    'sibsp': sibsp,
-                    'parch': parch,
-                    'fare': fare,
-                    'embarked': embarked,
-                }
-                
-                processed_data = preprocess_input(input_data)
-                selected_model = valid_models[selected_model_name]
-                
-                prediction = selected_model.predict(processed_data)
-                probability = selected_model.predict_proba(processed_data)
-                
-                st.write("---")
-                st.subheader("Prediction Results")
-                
-                col_result1, col_result2, col_result3 = st.columns(3)
-                
-                with col_result1:
-                    st.metric("Selected Model", selected_model_name)
-                
-                with col_result2:
-                    survival_status = "Survived" if prediction[0] == 1 else "Did Not Survive"
-                    st.metric("Prediction", survival_status)
-                
-                with col_result3:
-                    survival_prob = probability[0][1] * 100
-                    st.metric("Survival Probability", f"{survival_prob:.1f}%")
-                
-                if prediction[0] == 1:
-                    st.success(f"✅ Predicted to SURVIVE with {survival_prob:.1f}% confidence")
-                else:
-                    st.error(f"❌ Predicted NOT to Survive with {100 - survival_prob:.1f}% confidence")
-                
-                st.progress(int(survival_prob))
-                st.caption(f"Survival probability: {survival_prob:.1f}%")
-                
-                with st.expander("Show Detailed Analysis"):
-                    summary_data = {
-                        'Feature': ['Passenger Class', 'Sex', 'Age', 'Siblings/Spouses', 'Parents/Children', 'Fare', 'Embarkation'],
-                        'Value': [
-                            f"{pclass} ({'First' if pclass==1 else 'Second' if pclass==2 else 'Third'})", 
-                            sex, 
-                            f"{age} years", 
-                            sibsp, 
-                            parch, 
-                            f"£{fare:.2f}", 
-                            f"{embarked} ({'Cherbourg' if embarked=='C' else 'Queenstown' if embarked=='Q' else 'Southampton'})"
-                        ]
-                    }
-                    summary_df = pd.DataFrame(summary_data)
-                    st.table(summary_df)
-                    
-                    pred_details = {
-                        'Metric': ['Predicted Class', 'Survival Probability', 'Non-Survival Probability'],
-                        'Value': [
-                            'Survived' if prediction[0] == 1 else 'Did Not Survive',
-                            f"{probability[0][1]*100:.2f}%",
-                            f"{probability[0][0]*100:.2f}%"
-                        ]
-                    }
-                    pred_df = pd.DataFrame(pred_details)
-                    st.table(pred_df)
-                    
-            except Exception as e:
-                st.error(f"An error occurred: {str(e)}")
-    else:
-        st.error("❌ No valid models found for prediction!")
-        st.info("Please add model files to 'saved_models' folder and restart the app.")
 
-# Footer
-st.write("---")
-st.caption("🚢 Built with Streamlit • Machine Learning for Titanic Survival Prediction")
+# ---------------------------------------------------------
+# PAGE: Dataset
+# ---------------------------------------------------------
+elif page == "Dataset":
+    st.title("📊 Dataset")
+
+    if df is None:
+        st.error("Could not load the Titanic dataset. Check your internet connection.")
+        st.stop()
+
+    st.subheader("Dataset Preview")
+    n_rows = st.slider("Select number of rows to view", min_value=5, max_value=min(100, len(df)), value=5)
+    st.dataframe(df.head(n_rows), use_container_width=True)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("Shape of Dataset:")
+        st.code(str(df.shape))
+
+        st.subheader("Missing Values:")
+        st.dataframe(df.isnull().sum().to_frame(name="0"), use_container_width=True)
+
+    with c2:
+        st.subheader("Statistical Summary:")
+        st.dataframe(df.describe(include="all"), use_container_width=True)
+
+
+# ---------------------------------------------------------
+# PAGE: EDA
+# ---------------------------------------------------------
+elif page == "EDA":
+    st.title("📈 Exploratory Data Analysis")
+
+    if df is None:
+        st.error("Could not load the Titanic dataset.")
+        st.stop()
+
+    st.subheader("Survival count")
+    fig, ax = plt.subplots(figsize=(5, 4))
+    sns.countplot(x=TARGET_COL, data=df, ax=ax)
+    ax.set_xticklabels(["Did not survive", "Survived"])
+    st.pyplot(fig)
+
+    st.subheader("Survival rate by category")
+    cat_feat = st.selectbox("Choose a feature", ["sex", "pclass", "embarked"])
+    fig, ax = plt.subplots(figsize=(6, 4))
+    sns.barplot(x=cat_feat, y=TARGET_COL, data=df, ax=ax)
+    ax.set_ylabel("Survival rate")
+    st.pyplot(fig)
+
+    st.subheader("Correlation heatmap")
+    numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
+    fig, ax = plt.subplots(figsize=(7, 5))
+    sns.heatmap(df[numeric_cols].corr(), annot=True, fmt=".2f", cmap="coolwarm", ax=ax)
+    st.pyplot(fig)
+
+    st.subheader("Age distribution by survival")
+    fig, ax = plt.subplots(figsize=(8, 4))
+    sns.histplot(data=df, x="age", hue=TARGET_COL, kde=True, multiple="stack", ax=ax)
+    st.pyplot(fig)
+
+
+# ---------------------------------------------------------
+# PAGE: Model Comparison
+# ---------------------------------------------------------
+elif page == "Model Comparison":
+    st.title("🎯 Model Comparison")
+
+    model_files = list_models()
+    if not model_files:
+        st.error(f"No .pkl files found in '{MODELS_DIR}'.")
+        st.stop()
+    if df is None:
+        st.error("Could not load the Titanic dataset.")
+        st.stop()
+
+    X_raw = df[RAW_FEATURE_COLS]
+    y = df[TARGET_COL]
+
+    results = []
+    for mf in model_files:
+        try:
+            model = load_model(mf)
+            proba = get_probability(model, X_raw) / 100
+            preds = (proba >= 0.5).astype(int)
+            results.append({
+                "Model": mf.replace(".pkl", ""),
+                "Accuracy": accuracy_score(y, preds),
+                "Precision": precision_score(y, preds, zero_division=0),
+                "Recall": recall_score(y, preds, zero_division=0),
+                "F1": f1_score(y, preds, zero_division=0),
+                "ROC-AUC": roc_auc_score(y, proba),
+            })
+        except Exception as e:
+            results.append({"Model": mf.replace(".pkl", ""), "Accuracy": None, "Precision": None, "Recall": None, "F1": None, "ROC-AUC": None})
+            st.error(f"{mf} failed: {e}")
+
+    results_df = pd.DataFrame(results).sort_values("Accuracy", ascending=False)
+    st.dataframe(results_df, use_container_width=True)
+
+    if results_df["Accuracy"].notna().any():
+        st.subheader("Accuracy comparison")
+        fig, ax = plt.subplots(figsize=(8, 4))
+        sns.barplot(data=results_df, x="Model", y="Accuracy", ax=ax, palette="viridis")
+        plt.xticks(rotation=20)
+        st.pyplot(fig)
+        st.success(f"🏆 Best performing model: **{results_df.iloc[0]['Model']}**")
+
+
+# ---------------------------------------------------------
+# PAGE: Prediction
+# ---------------------------------------------------------
+elif page == "Prediction":
+    st.title("🎯 Prediction")
+
+    model_files = list_models()
+    if not model_files:
+        st.error(f"No .pkl files found in '{MODELS_DIR}'.")
+        st.stop()
+
+    selected_model_file = st.selectbox("Choose a model", model_files)
+    model = load_model(selected_model_file)
+    st.success(f"Loaded **{selected_model_file}**")
+
+    st.subheader("Enter passenger details")
+    cols = st.columns(2)
+    input_values = {}
+
+    with cols[0]:
+        input_values["pclass"] = st.selectbox("pclass (ticket class)", [1, 2, 3], index=2)
+        input_values["sex"] = st.selectbox("sex", ["male", "female"])
+        input_values["age"] = st.number_input("age", value=float(df["age"].median()) if df is not None else 28.0, min_value=0.0, max_value=100.0)
+        input_values["embarked"] = st.selectbox("embarked", ["S", "C", "Q"])
+
+    with cols[1]:
+        input_values["sibsp"] = st.number_input("sibsp (siblings/spouses aboard)", min_value=0, max_value=10, value=0, step=1)
+        input_values["parch"] = st.number_input("parch (parents/children aboard)", min_value=0, max_value=10, value=0, step=1)
+        input_values["fare"] = st.number_input("fare", value=float(df["fare"].median()) if df is not None else 32.0, min_value=0.0)
+
+    if st.button("Predict Survival Probability"):
+        try:
+            raw_row = pd.DataFrame([input_values])[RAW_FEATURE_COLS]
+            proba = get_probability(model, raw_row)[0]
+            st.success(f"🚢 Predicted Survival Probability: **{proba:.2f}%**")
+            st.progress(min(max(proba / 100, 0.0), 1.0))
+        except Exception as e:
+            st.error(f"Prediction failed: {e}")
+            st.caption("The model may expect a specific encoding. Check how sex/embarked were "
+                       "encoded during training and adjust LABEL_MAPS in app.py if needed.")
