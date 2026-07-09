@@ -15,6 +15,7 @@ from sklearn.neighbors import KNeighborsClassifier
 import warnings
 warnings.filterwarnings('ignore')
 import joblib
+import shutil
 
 # Page configuration
 st.set_page_config(
@@ -35,12 +36,15 @@ page = st.sidebar.radio(
     index=0
 )
 
-# Load Titanic dataset
+# Load Titanic dataset with only required columns
 @st.cache_data
 def load_titanic_data():
     try:
         import seaborn as sns
         titanic = sns.load_dataset('titanic')
+        # Keep only required columns
+        required_cols = ['survived', 'pclass', 'sex', 'age', 'sibsp', 'parch', 'fare', 'embarked']
+        titanic = titanic[required_cols]
         return titanic
     except:
         # If seaborn fails, create sample data
@@ -85,9 +89,6 @@ def create_all_features(data):
     # Create IsAlone feature
     X['IsAlone'] = (X['FamilySize'] == 1).astype(int)
     
-    # Select final features
-    final_features = ['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked', 'FamilySize', 'IsAlone']
-    
     # Rename columns to match model expectations
     X = X.rename(columns={
         'pclass': 'Pclass',
@@ -99,12 +100,36 @@ def create_all_features(data):
         'embarked': 'Embarked'
     })
     
+    # Select final features in correct order
+    final_features = ['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked', 'FamilySize', 'IsAlone']
+    
     # Ensure all required columns exist
     for col in final_features:
         if col not in X.columns:
             X[col] = 0
     
     return X[final_features]
+
+# Function to clean incompatible models
+def clean_incompatible_models():
+    """Remove incompatible model files"""
+    model_folder = 'saved_models'
+    if os.path.exists(model_folder):
+        # Backup the folder
+        backup_folder = 'saved_models_backup'
+        if not os.path.exists(backup_folder):
+            shutil.copytree(model_folder, backup_folder)
+            st.info(f"📁 Backed up old models to {backup_folder}")
+        
+        # Remove all model files
+        for file in os.listdir(model_folder):
+            if file.endswith('.pkl') and file != 'scaler.pkl':
+                file_path = os.path.join(model_folder, file)
+                try:
+                    os.remove(file_path)
+                    st.info(f"🗑️ Removed incompatible model: {file}")
+                except:
+                    pass
 
 # Function to try loading model with different methods
 def load_model_with_fallback(file_path):
@@ -153,7 +178,7 @@ def train_and_save_models():
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
     
-    # Define models
+    # Define models with simpler names
     models = {
         'Logistic Regression': LogisticRegression(max_iter=1000, random_state=42),
         'Decision Tree': DecisionTreeClassifier(random_state=42),
@@ -165,31 +190,41 @@ def train_and_save_models():
     # Train and save models
     trained_models = {}
     for name, model in models.items():
-        # For KNN and LogisticRegression, use scaled data
-        if name in ['KNN', 'Logistic Regression']:
-            model.fit(X_train_scaled, y_train)
-        else:
-            model.fit(X_train, y_train)
-        
-        # Save model
-        file_path = os.path.join('saved_models', f'{name.replace(" ", "")}.pkl')
-        with open(file_path, 'wb') as f:
-            pickle.dump(model, f)
-        
-        trained_models[name] = model
+        try:
+            # For KNN and LogisticRegression, use scaled data
+            if name in ['KNN', 'Logistic Regression']:
+                model.fit(X_train_scaled, y_train)
+            else:
+                model.fit(X_train, y_train)
+            
+            # Save model with simple name
+            file_name = f'{name.replace(" ", "")}.pkl'
+            file_path = os.path.join('saved_models', file_name)
+            with open(file_path, 'wb') as f:
+                pickle.dump(model, f)
+            
+            trained_models[name] = model
+        except Exception as e:
+            st.warning(f"Could not train {name}: {str(e)}")
     
     # Train and save BEST model (using Random Forest as best)
-    best_model = RandomForestClassifier(n_estimators=100, random_state=42)
-    best_model.fit(X_train, y_train)
-    best_path = os.path.join('saved_models', 'BestModel.pkl')
-    with open(best_path, 'wb') as f:
-        pickle.dump(best_model, f)
-    trained_models['Best Model'] = best_model
+    try:
+        best_model = RandomForestClassifier(n_estimators=100, random_state=42)
+        best_model.fit(X_train, y_train)
+        best_path = os.path.join('saved_models', 'BestModel.pkl')
+        with open(best_path, 'wb') as f:
+            pickle.dump(best_model, f)
+        trained_models['Best Model'] = best_model
+    except Exception as e:
+        st.warning(f"Could not train Best Model: {str(e)}")
     
     # Save scaler
-    scaler_path = os.path.join('saved_models', 'scaler.pkl')
-    with open(scaler_path, 'wb') as f:
-        pickle.dump(scaler, f)
+    try:
+        scaler_path = os.path.join('saved_models', 'scaler.pkl')
+        with open(scaler_path, 'wb') as f:
+            pickle.dump(scaler, f)
+    except Exception as e:
+        st.warning(f"Could not save scaler: {str(e)}")
     
     return trained_models
 
@@ -204,22 +239,23 @@ def load_models():
         st.info("Training models for the first time... Please wait.")
         return train_and_save_models()
     
-    # List all .pkl files in the folder - exclude meta.pkl
+    # List all .pkl files in the folder - exclude scaler and meta
     model_files = [f for f in os.listdir(model_folder) 
-                   if f.endswith('.pkl') and f != 'scaler.pkl' and f != 'meta.pkl']
+                   if f.endswith('.pkl') and f not in ['scaler.pkl', 'meta.pkl']]
     
     if not model_files:
         st.info("No models found. Training models... Please wait.")
         return train_and_save_models()
     
-    # Load each model with fallback
+    # Try to load each model
+    loaded_count = 0
     for model_file in model_files:
         file_path = os.path.join(model_folder, model_file)
         try:
             # Try to load with fallback methods
             model = load_model_with_fallback(file_path)
             
-            if model is not None:
+            if model is not None and hasattr(model, 'predict'):
                 model_name = model_file.replace('.pkl', '')
                 # Rename for display
                 if model_name == 'BestModel':
@@ -232,15 +268,46 @@ def load_models():
                     model_name = 'Random Forest'
                 elif model_name == 'GradientBoosting':
                     model_name = 'Gradient Boosting'
-                models[model_name] = model
+                
+                # Verify model works with our data
+                try:
+                    test_X = create_all_features(df.head(1))
+                    test_pred = model.predict(test_X)
+                    models[model_name] = model
+                    loaded_count += 1
+                except Exception as e:
+                    st.sidebar.warning(f"Model {model_name} incompatible with current data: {str(e)}")
+                    # Remove incompatible model
+                    try:
+                        os.remove(file_path)
+                        st.sidebar.info(f"Removed incompatible model: {model_file}")
+                    except:
+                        pass
             else:
-                st.sidebar.warning(f"Could not load {model_file} - incompatible format")
+                st.sidebar.warning(f"Could not load {model_file} - invalid model")
+                # Remove invalid model
+                try:
+                    os.remove(file_path)
+                except:
+                    pass
         except Exception as e:
             st.sidebar.warning(f"Could not load {model_file}: {str(e)}")
+            # Remove problematic model
+            try:
+                os.remove(file_path)
+            except:
+                pass
     
-    # If no models loaded successfully, retrain
+    # If no models loaded successfully, clean and retrain
     if not models:
-        st.info("Models corrupted or incompatible. Retraining with current environment...")
+        st.info("No compatible models found. Cleaning and retraining...")
+        # Clean the folder
+        for file in os.listdir(model_folder):
+            if file.endswith('.pkl') and file not in ['scaler.pkl']:
+                try:
+                    os.remove(os.path.join(model_folder, file))
+                except:
+                    pass
         return train_and_save_models()
     
     return models
@@ -256,8 +323,7 @@ if models:
     st.sidebar.success(f"✅ {len(models)} models loaded successfully")
     with st.sidebar.expander("View Models"):
         for name in models.keys():
-            if name != 'meta':  # Skip meta model
-                st.sidebar.write(f"- {name}")
+            st.sidebar.write(f"- {name}")
 else:
     st.sidebar.error("❌ No models loaded!")
 
@@ -548,13 +614,11 @@ elif page == "🤖 Model Comparison":
                 valid_models[name] = model
         
         if not valid_models:
-            st.warning("No valid models found. Please retrain models.")
-            st.info("Click the button below to retrain models with current environment.")
-            if st.button("🔄 Retrain Models"):
-                with st.spinner("Training models... Please wait."):
-                    models = train_and_save_models()
-                    st.success("Models retrained successfully!")
-                    st.rerun()
+            st.warning("No valid models found. Retraining...")
+            with st.spinner("Training models... Please wait."):
+                models = train_and_save_models()
+                st.success("Models trained successfully!")
+                st.rerun()
         else:
             # Prepare data for model evaluation with all features
             def prepare_data():
