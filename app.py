@@ -7,7 +7,7 @@ import time
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
-from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, StratifiedKFold
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, StratifiedKFold, train_test_split
 
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
@@ -243,14 +243,14 @@ def render_param_grid_ui(model_name):
 # ---------------------------------------------------------
 # Sidebar navigation
 # ---------------------------------------------------------
-PAGES = ["Project Details", "Dataset", "EDA", "Model Comparison", "Hyperparameter Tuning", "Prediction"]
+PAGES = ["Project Details", "Dataset", "EDA", "Model Comparison", "Train Model", "Hyperparameter Tuning", "Prediction"]
 
 with st.sidebar:
     if HAS_OPTION_MENU:
         page = option_menu(
             menu_title="Navigation",
             options=PAGES,
-            icons=["info-circle", "bar-chart", "graph-up", "bullseye", "sliders", "target"],
+            icons=["info-circle", "bar-chart", "graph-up", "bullseye", "cpu", "sliders", "target"],
             menu_icon="list",
             default_index=1,
             styles={
@@ -279,6 +279,7 @@ if page == "Project Details":
     - **Dataset** — preview Titanic passenger data (loaded automatically, no file upload needed)
     - **EDA** — explore survival patterns by class, sex, age, and fare
     - **Model Comparison** — compare saved classification models by accuracy, precision, recall, F1, ROC-AUC
+    - **Train Model** — train a brand-new model from scratch with a chosen algorithm and save it
     - **Hyperparameter Tuning** — run Grid Search / Randomized Search on a chosen model and optionally save it
     - **Prediction** — enter passenger details and get a predicted survival **probability (%)**
     """)
@@ -403,6 +404,139 @@ elif page == "Model Comparison":
         plt.xticks(rotation=20)
         st.pyplot(fig)
         st.success(f"🏆 Best performing model: **{results_df.iloc[0]['Model']}**")
+
+
+# ---------------------------------------------------------
+# PAGE: Train Model
+# ---------------------------------------------------------
+elif page == "Train Model":
+    st.title("🧠 Train Model")
+    st.write("Train a brand-new model from scratch on the Titanic dataset (no hyperparameter search — just fit "
+             "the algorithm with the settings you choose below) and save it as a `.pkl` file.")
+
+    if df is None:
+        st.error("Could not load the Titanic dataset.")
+        st.stop()
+
+    X = build_onehot_10col(df[RAW_FEATURE_COLS])
+    y = df[TARGET_COL]
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        model_name = st.selectbox("Choose an algorithm", list(MODEL_REGISTRY.keys()), key="train_model_name")
+    with col_b:
+        test_size = st.slider("Test set size (fraction held out for evaluation)",
+                               min_value=0.1, max_value=0.5, value=0.2, step=0.05)
+
+    st.subheader(f"Set hyperparameters for {model_name}")
+    st.caption("These are single fixed values used to fit one model directly — "
+               "for searching over a range of values instead, use the Hyperparameter Tuning page.")
+
+    estimator_params = {}
+    if model_name == "Logistic Regression":
+        c1, c2 = st.columns(2)
+        estimator_params["C"] = c1.number_input("C", min_value=0.001, value=1.0, step=0.1)
+        estimator_params["penalty"] = c2.selectbox("penalty", ["l1", "l2"], index=1)
+        estimator_params["solver"] = "liblinear"
+        estimator_params["max_iter"] = 1000
+
+    elif model_name == "Random Forest":
+        c1, c2, c3, c4 = st.columns(4)
+        estimator_params["n_estimators"] = c1.number_input("n_estimators", min_value=10, value=200, step=10)
+        max_depth_raw = c2.text_input("max_depth (blank = None)", value="")
+        estimator_params["max_depth"] = int(max_depth_raw) if max_depth_raw.strip() else None
+        estimator_params["min_samples_split"] = c3.number_input("min_samples_split", min_value=2, value=2, step=1)
+        estimator_params["min_samples_leaf"] = c4.number_input("min_samples_leaf", min_value=1, value=1, step=1)
+        estimator_params["random_state"] = 42
+
+    elif model_name == "Gradient Boosting":
+        c1, c2, c3 = st.columns(3)
+        estimator_params["n_estimators"] = c1.number_input("n_estimators", min_value=10, value=100, step=10)
+        estimator_params["learning_rate"] = c2.number_input("learning_rate", min_value=0.001, value=0.1, step=0.01, format="%.3f")
+        estimator_params["max_depth"] = c3.number_input("max_depth", min_value=1, value=3, step=1)
+        estimator_params["random_state"] = 42
+
+    elif model_name == "SVM":
+        c1, c2, c3 = st.columns(3)
+        estimator_params["C"] = c1.number_input("C", min_value=0.001, value=1.0, step=0.1)
+        estimator_params["kernel"] = c2.selectbox("kernel", ["linear", "rbf", "poly"], index=1)
+        estimator_params["gamma"] = c3.selectbox("gamma", ["scale", "auto"], index=0)
+        estimator_params["probability"] = True
+        estimator_params["random_state"] = 42
+
+    elif model_name == "K-Nearest Neighbors":
+        c1, c2, c3 = st.columns(3)
+        estimator_params["n_neighbors"] = c1.number_input("n_neighbors", min_value=1, value=5, step=1)
+        estimator_params["weights"] = c2.selectbox("weights", ["uniform", "distance"], index=0)
+        estimator_params["p"] = c3.selectbox("p (distance metric: 1=manhattan, 2=euclidean)", [1, 2], index=1)
+
+    elif model_name == "Decision Tree":
+        c1, c2, c3 = st.columns(3)
+        max_depth_raw = c1.text_input("max_depth (blank = None)", value="")
+        estimator_params["max_depth"] = int(max_depth_raw) if max_depth_raw.strip() else None
+        estimator_params["min_samples_split"] = c2.number_input("min_samples_split", min_value=2, value=2, step=1)
+        estimator_params["criterion"] = c3.selectbox("criterion", ["gini", "entropy"], index=0)
+        estimator_params["random_state"] = 42
+
+    if "train_result" not in st.session_state:
+        st.session_state.train_result = None
+
+    if st.button("🚀 Train Model", type="primary"):
+        estimator_class = type(MODEL_REGISTRY[model_name]["estimator"])
+        try:
+            model = estimator_class(**estimator_params)
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=test_size, random_state=42, stratify=y
+            )
+
+            with st.spinner(f"Training {model_name}..."):
+                start = time.time()
+                model.fit(X_train, y_train)
+                elapsed = time.time() - start
+
+            proba_test = _proba(model, X_test) / 100
+            preds_test = (proba_test >= 0.5).astype(int)
+
+            st.session_state.train_result = {
+                "model_name": model_name,
+                "model": model,
+                "elapsed": elapsed,
+                "metrics": {
+                    "Accuracy": accuracy_score(y_test, preds_test),
+                    "Precision": precision_score(y_test, preds_test, zero_division=0),
+                    "Recall": recall_score(y_test, preds_test, zero_division=0),
+                    "F1": f1_score(y_test, preds_test, zero_division=0),
+                    "ROC-AUC": roc_auc_score(y_test, proba_test),
+                },
+            }
+        except Exception as e:
+            st.error(f"Training failed: {e}")
+            st.session_state.train_result = None
+
+    result = st.session_state.train_result
+    if result and result["model_name"] == model_name:
+        st.success(f"✅ Trained in {result['elapsed']:.2f}s")
+
+        st.subheader("Held-out test set performance")
+        m = result["metrics"]
+        eval_cols = st.columns(5)
+        eval_cols[0].metric("Accuracy", f"{m['Accuracy']:.3f}")
+        eval_cols[1].metric("Precision", f"{m['Precision']:.3f}")
+        eval_cols[2].metric("Recall", f"{m['Recall']:.3f}")
+        eval_cols[3].metric("F1", f"{m['F1']:.3f}")
+        eval_cols[4].metric("ROC-AUC", f"{m['ROC-AUC']:.3f}")
+
+        st.subheader("Save this model")
+        default_filename = model_name.lower().replace(" ", "_") + "_new.pkl"
+        save_filename = st.text_input("Filename to save in saved_models/", value=default_filename, key="train_save_filename")
+        if st.button("💾 Save this model", key="train_save_button"):
+            if not save_filename.endswith(".pkl"):
+                save_filename += ".pkl"
+            os.makedirs(MODELS_DIR, exist_ok=True)
+            save_path = os.path.join(MODELS_DIR, save_filename)
+            joblib.dump(result["model"], save_path)
+            load_model.clear()  # clear cache_resource so the new file is picked up
+            st.success(f"Saved to `{save_path}`. It will now appear in Model Comparison and Prediction pages.")
 
 
 # ---------------------------------------------------------
